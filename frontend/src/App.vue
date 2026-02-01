@@ -33,6 +33,22 @@
             <el-icon class="menu-icon"><Document /></el-icon>
             <span>日志查看</span>
           </el-menu-item>
+          <el-menu-item index="/subscribe-search" class="menu-item">
+            <el-icon class="menu-icon"><Search /></el-icon>
+            <span>订阅搜索</span>
+          </el-menu-item>
+          <el-menu-item index="/emby" class="menu-item">
+            <el-icon class="menu-icon"><VideoPlay /></el-icon>
+            <span>Emby管理</span>
+          </el-menu-item>
+          <el-menu-item index="/emby-config" class="menu-item">
+            <el-icon class="menu-icon"><Setting /></el-icon>
+            <span>Emby配置</span>
+          </el-menu-item>
+          <el-menu-item index="/smart-search-config" class="menu-item">
+            <el-icon class="menu-icon"><MagicStick /></el-icon>
+            <span>智能搜索配置</span>
+          </el-menu-item>
         </el-menu>
 
         <div class="sidebar-footer">
@@ -86,7 +102,11 @@ const currentPageTitle = computed(() => {
     '/account': '账号管理',
     '/task': '任务管理',
     '/upload': '文件上传',
-    '/log': '日志查看'
+    '/log': '日志查看',
+    '/subscribe-search': '订阅搜索',
+    '/emby': 'Emby管理',
+    '/emby-config': 'Emby配置',
+    '/smart-search-config': '智能搜索配置'
   }
   return titles[route.path] || '首页'
 })

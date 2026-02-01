@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(mvn compile:*)"
+      "Bash(mvn compile:*)",
+      "Bash(bash:*)",
+      "Bash(ping:*)",
+      "Bash(curl:*)",
+      "Bash(mvn clean compile:*)",
+      "Bash(dir:*)",
+      "Bash(ls:*)",
+      "Bash(findstr:*)",
+      "Bash(cmd.exe /c check_compile.bat)"
     ]
   }
 }

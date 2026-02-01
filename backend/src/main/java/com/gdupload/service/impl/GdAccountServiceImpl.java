@@ -186,21 +186,37 @@ public class GdAccountServiceImpl extends ServiceImpl<GdAccountMapper, GdAccount
     @Transactional(rollbackFor = Exception.class)
     public boolean resetAccountQuota(Long accountId) {
         // 配额每天凌晨0点重置，不需要手动重置
-        // 这个方法改为检查并恢复账号状态
+        // 这个方法用于手动恢复账号状态（强制启用）并清空今日上传记录
         GdAccount account = baseMapper.selectAccountWithRealTimeQuota(accountId);
         if (account == null) {
             throw new BusinessException("账号不存在");
         }
 
-        // 如果配额已恢复，更新状态为启用
-        if (account.getRemainingQuota() > 0 && account.getStatus() == 2) {
-            account.setStatus(1);
-            this.updateById(account);
-            log.info("账号 {} 配额已恢复，状态更新为启用", account.getAccountName());
-            return true;
-        }
+        Long originalUsedQuota = account.getUsedQuota();
+        Integer originalStatus = account.getStatus();
 
-        return false;
+        // 关键修复：将今日的上传记录标记为失败状态（status = 2）
+        // 这样在计算配额时会被排除（因为查询条件是 status = 1）
+        int affectedRows = uploadRecordMapper.update(null,
+            new com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper<com.gdupload.entity.UploadRecord>()
+                .set("status", 2)
+                .set("error_message", "手动重置配额")
+                .eq("account_id", accountId)
+                .eq("status", 1)
+                .apply("DATE(upload_time) = CURDATE()"));
+
+        log.info("账号 {} 重置配额，标记今日 {} 条上传记录为失败状态", account.getAccountName(), affectedRows);
+
+        // 恢复账号状态为启用
+        account.setStatus(1);
+        account.setQuotaResetTime(null);
+        account.setDisabledTime(null);
+        this.updateById(account);
+
+        log.info("账号 {} 配额重置成功，状态从 {} 更新为启用(1)，原已使用配额: {}，已标记 {} 条记录",
+            account.getAccountName(), originalStatus, originalUsedQuota, affectedRows);
+
+        return true;
     }
 
     @Override

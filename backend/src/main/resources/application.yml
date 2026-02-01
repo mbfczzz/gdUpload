@@ -26,12 +26,15 @@ spring:
       min-evictable-idle-time-millis: 300000
       validation-query: SELECT 1
       test-while-idle: true
-      test-on-borrow: false
+      test-on-borrow: true
       test-on-return: false
       pool-prepared-statements: true
       max-pool-prepared-statement-per-connection-size: 20
       filters: stat,wall
       connection-properties: druid.stat.mergeSql=true;druid.stat.slowSqlMillis=5000
+      # 防止连接超时的关键配置
+      keep-alive: true
+      max-evictable-idle-time-millis: 900000
       web-stat-filter:
         enabled: true
         url-pattern: /*
@@ -125,3 +128,23 @@ app:
     enabled: true
     path: /ws
     allowed-origins: "*"
+
+  # Emby配置
+  emby:
+    server-url: http://209.146.116.4:8096  # Emby服务器地址
+    api-key: ""  # Emby API密钥（可选，如果为空则使用用户名密码登录）
+    user-id: ""  # Emby用户ID（可选，留空自动获取）
+    username: "mbfczzzz"  # 用户名（用于密码登录，可选）
+    password: "mbfczzzz@123"  # 密码（用于密码登录，可选）
+    timeout: 30000  # 请求超时时间（毫秒）
+    enabled: true  # 是否启用Emby集成
+
+  # AI配置
+  ai:
+    enabled: false  # 是否启用AI筛选（默认关闭，需要配置API Key后启用）
+    provider: claude  # AI提供商：claude, openai, ollama
+    api-key: ${ANTHROPIC_API_KEY:}  # API密钥（从环境变量读取，或直接填写）
+    api-url: http://localhost:11434  # Ollama API地址（仅Ollama需要）
+    model: claude-3-5-sonnet-20241022  # 模型名称
+    max-tokens: 1024  # 最大token数
+    temperature: 0.7  # 温度参数（0-1）
