@@ -70,6 +70,12 @@ const routes = [
     name: 'SmartSearchConfig',
     component: () => import('@/views/SmartSearchConfig.vue'),
     meta: { title: '智能搜索配置' }
+  },
+  {
+    path: '/resource115',
+    name: 'Resource115Manage',
+    component: () => import('@/views/Resource115Manage.vue'),
+    meta: { title: '115资源管理' }
   }
 ]
 

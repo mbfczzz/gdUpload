@@ -49,6 +49,10 @@
             <el-icon class="menu-icon"><MagicStick /></el-icon>
             <span>智能搜索配置</span>
           </el-menu-item>
+          <el-menu-item index="/resource115" class="menu-item">
+            <el-icon class="menu-icon"><Files /></el-icon>
+            <span>115资源管理</span>
+          </el-menu-item>
         </el-menu>
 
         <div class="sidebar-footer">
@@ -106,7 +110,8 @@ const currentPageTitle = computed(() => {
     '/subscribe-search': '订阅搜索',
     '/emby': 'Emby管理',
     '/emby-config': 'Emby配置',
-    '/smart-search-config': '智能搜索配置'
+    '/smart-search-config': '智能搜索配置',
+    '/resource115': '115资源管理'
   }
   return titles[route.path] || '首页'
 })
