@@ -40,14 +40,17 @@ com\gdupload\controller\Resource115Controller.class
 com\gdupload\entity\EmbyLibraryCache.class
 com\gdupload\common\Result.class
 com\gdupload\service\impl\WebSocketServiceImpl.class
+com\gdupload\controller\Transfer115Controller.class
 com\gdupload\service\impl\AIServiceImpl.class
 com\gdupload\entity\UploadTask.class
 com\gdupload\service\impl\EmbyConfigServiceImpl.class
 com\gdupload\entity\GdAccount.class
 com\gdupload\entity\EmbyGenreCache.class
 com\gdupload\service\impl\TransferHistoryServiceImpl.class
+com\gdupload\service\impl\Transfer115ServiceImpl.class
 com\gdupload\entity\EmbyItemCache.class
 com\gdupload\mapper\EmbyGenreCacheMapper.class
+com\gdupload\service\I115TransferService.class
 com\gdupload\service\IFileInfoService.class
 com\gdupload\service\IResource115ManageService.class
 com\gdupload\service\IWebSocketService.class

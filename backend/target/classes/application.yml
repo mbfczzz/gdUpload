@@ -148,3 +148,13 @@ app:
     model: claude-3-5-sonnet-20241022  # 模型名称
     max-tokens: 1024  # 最大token数
     temperature: 0.7  # 温度参数（0-1）
+
+  # 115网盘配置
+  115:
+    cookie: ${115_COOKIE:}  # 115网盘Cookie（从环境变量读取，或直接填写）
+    target-folder-id: "0"  # 默认转存目标文件夹ID（0表示根目录）
+
+# TMDB配置
+tmdb:
+  api:
+    key: "e7db196b5ec2ea9e555d39635bb7441f"  # TMDB API密钥（从环境变量读取，或直接填写）

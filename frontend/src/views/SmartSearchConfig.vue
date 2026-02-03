@@ -310,6 +310,60 @@
         </template>
       </el-card>
 
+      <!-- 115网盘配置 -->
+      <el-card class="config-section">
+        <template #header>
+          <div class="section-header">
+            <el-icon><FolderOpened /></el-icon>
+            <span>115网盘配置</span>
+          </div>
+        </template>
+
+        <el-alert
+          title="115网盘说明"
+          type="info"
+          :closable="false"
+          style="margin-bottom: 16px;"
+        >
+          <div style="font-size: 13px; line-height: 1.6;">
+            <p>配置115网盘Cookie后，系统会优先从115资源库中匹配资源并自动转存。</p>
+            <p style="margin-top: 4px;">如果TMDB ID在115资源表中找到匹配，将直接调用115转存API。</p>
+          </div>
+        </el-alert>
+
+        <el-form-item label="启用115转存">
+          <el-switch v-model="config.enable115Transfer" />
+          <div class="form-tip">启用后优先使用115资源库进行匹配和转存</div>
+        </el-form-item>
+
+        <template v-if="config.enable115Transfer">
+          <el-form-item label="115 Cookie">
+            <el-input
+              v-model="config.cookie115"
+              type="textarea"
+              :rows="3"
+              placeholder="请输入115网盘的Cookie"
+            />
+            <div class="form-tip">
+              从浏览器开发者工具中获取115.com的Cookie
+              <a href="https://115.com" target="_blank">打开115网盘</a>
+            </div>
+          </el-form-item>
+
+          <el-form-item label="目标文件夹ID">
+            <el-input v-model="config.targetFolderId115" placeholder="0（根目录）" />
+            <div class="form-tip">转存到115网盘的目标文件夹ID，0表示根目录</div>
+          </el-form-item>
+
+          <el-form-item label="测试115连接">
+            <el-button @click="test115Connection" :loading="testing.transfer115">
+              <el-icon><Connection /></el-icon>
+              测试115服务
+            </el-button>
+          </el-form-item>
+        </template>
+      </el-card>
+
       <!-- 链接验证配置 -->
       <el-card class="config-section">
         <template #header>
@@ -455,6 +509,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getFullConfig, saveFullConfig } from '@/api/smartSearchConfig'
+import { test115Cookie, get115UserInfo } from '@/api/transfer115'
 
 const formRef = ref(null)
 const fileInputRef = ref(null)
@@ -462,7 +517,8 @@ const saving = ref(false)
 const testing = ref({
   search: false,
   ai: false,
-  tmdb: false
+  tmdb: false,
+  transfer115: false
 })
 
 // 默认配置
@@ -498,6 +554,11 @@ const defaultConfig = {
   tmdbLanguage: 'zh-CN',
   tmdbTimeout: 10000,
   tmdbAutoMatch: true,
+
+  // 115网盘配置
+  enable115Transfer: false,
+  cookie115: '',
+  targetFolderId115: '0',
 
   // 链接验证
   validateLinks: true,
@@ -710,6 +771,36 @@ const testTmdbConnection = async () => {
     ElMessage.error('TMDB服务连接失败: ' + error.message)
   } finally {
     testing.value.tmdb = false
+  }
+}
+
+// 测试115连接
+const test115Connection = async () => {
+  if (!config.value.cookie115) {
+    ElMessage.warning('请先配置115 Cookie')
+    return
+  }
+
+  testing.value.transfer115 = true
+
+  try {
+    const res = await test115Cookie()
+    if (res.code === 200) {
+      // 获取用户信息
+      const userInfoRes = await get115UserInfo()
+      if (userInfoRes.code === 200) {
+        const userInfo = userInfoRes.data
+        ElMessage.success(`115服务连接正常 (用户: ${userInfo.user_name})`)
+      } else {
+        ElMessage.success('115服务连接正常')
+      }
+    } else {
+      ElMessage.error('115 Cookie无效或已过期')
+    }
+  } catch (error) {
+    ElMessage.error('115服务连接失败: ' + error.message)
+  } finally {
+    testing.value.transfer115 = false
   }
 }
 

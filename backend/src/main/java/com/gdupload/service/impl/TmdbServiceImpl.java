@@ -7,6 +7,7 @@ import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.gdupload.entity.Resource115;
 import com.gdupload.mapper.Resource115Mapper;
+import com.gdupload.service.ISmartSearchConfigService;
 import com.gdupload.service.ITmdbService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,6 +15,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -27,10 +29,13 @@ public class TmdbServiceImpl implements ITmdbService {
     @Autowired
     private Resource115Mapper resource115Mapper;
 
+    @Autowired
+    private ISmartSearchConfigService smartSearchConfigService;
+
     @Value("${tmdb.api.key:}")
     private String tmdbApiKey;
 
-    private static final String TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/%s?api_key=%s&query=%s&language=zh-CN";
+    private static final String TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/%s?api_key=%s&query=%s&language=%s";
 
     @Override
     public String searchTmdbId(String name, Integer year, String type) {
@@ -38,8 +43,17 @@ public class TmdbServiceImpl implements ITmdbService {
             return null;
         }
 
-        // 如果没有配置 API Key，返回 null
-        if (tmdbApiKey == null || tmdbApiKey.isEmpty()) {
+        // 优先从数据库配置读取 API Key
+        String apiKey = getTmdbApiKey();
+        String language = getTmdbLanguage();
+
+        // 如果数据库没有配置，使用 application.yml 的配置
+        if (apiKey == null || apiKey.isEmpty()) {
+            apiKey = tmdbApiKey;
+        }
+
+        // 如果还是没有配置 API Key，返回 null
+        if (apiKey == null || apiKey.isEmpty()) {
             log.warn("TMDB API Key 未配置，无法搜索");
             return null;
         }
@@ -50,11 +64,11 @@ public class TmdbServiceImpl implements ITmdbService {
         // 确定搜索类型（movie 或 tv）
         String searchType = determineType(type);
 
-        log.info("搜索 TMDB ID: name={}, year={}, type={}", cleanName, year, searchType);
+        log.info("搜索 TMDB ID: name={}, year={}, type={}, language={}", cleanName, year, searchType, language);
 
         try {
             // 构建搜索 URL
-            String url = String.format(TMDB_SEARCH_URL, searchType, tmdbApiKey, cleanName);
+            String url = String.format(TMDB_SEARCH_URL, searchType, apiKey, cleanName, language);
             if (year != null) {
                 url += "&year=" + year;
             }
@@ -88,6 +102,36 @@ public class TmdbServiceImpl implements ITmdbService {
             log.error("搜索 TMDB ID 失败: {}", e.getMessage(), e);
             return null;
         }
+    }
+
+    /**
+     * 从数据库配置获取 TMDB API Key
+     */
+    private String getTmdbApiKey() {
+        try {
+            Map<String, Object> config = smartSearchConfigService.getFullConfig("default");
+            if (config != null && config.containsKey("tmdbApiKey")) {
+                return (String) config.get("tmdbApiKey");
+            }
+        } catch (Exception e) {
+            log.debug("从数据库读取 TMDB API Key 失败: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * 从数据库配置获取 TMDB 语言设置
+     */
+    private String getTmdbLanguage() {
+        try {
+            Map<String, Object> config = smartSearchConfigService.getFullConfig("default");
+            if (config != null && config.containsKey("tmdbLanguage")) {
+                return (String) config.get("tmdbLanguage");
+            }
+        } catch (Exception e) {
+            log.debug("从数据库读取 TMDB 语言设置失败: {}", e.getMessage());
+        }
+        return "zh-CN"; // 默认简体中文
     }
 
     @Override

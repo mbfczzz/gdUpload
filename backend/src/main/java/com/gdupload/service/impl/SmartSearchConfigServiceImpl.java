@@ -88,6 +88,11 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         Integer tmdbTimeout = null;
         Boolean tmdbAutoMatch = null;
 
+        // 115配置变量
+        Boolean enable115Transfer = null;
+        String cookie115 = null;
+        String targetFolderId115 = null;
+
         for (SmartSearchConfig config : allConfigs) {
             try {
                 Map<String, Object> data = JSONUtil.toBean(config.getConfigData(), Map.class);
@@ -138,6 +143,17 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
                             tmdbAutoMatch = (Boolean) data.get("tmdbAutoMatch");
                         }
                         break;
+                    case "115_config":
+                        if (data.containsKey("enable115Transfer")) {
+                            enable115Transfer = (Boolean) data.get("enable115Transfer");
+                        }
+                        if (data.containsKey("cookie115")) {
+                            cookie115 = (String) data.get("cookie115");
+                        }
+                        if (data.containsKey("targetFolderId115")) {
+                            targetFolderId115 = (String) data.get("targetFolderId115");
+                        }
+                        break;
                 }
             } catch (Exception e) {
                 log.error("解析配置失败: {}", config.getConfigName(), e);
@@ -182,6 +198,17 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         }
         if (tmdbAutoMatch != null) {
             fullConfig.put("tmdbAutoMatch", tmdbAutoMatch);
+        }
+
+        // 添加115配置到返回结果
+        if (enable115Transfer != null) {
+            fullConfig.put("enable115Transfer", enable115Transfer);
+        }
+        if (cookie115 != null) {
+            fullConfig.put("cookie115", cookie115);
+        }
+        if (targetFolderId115 != null) {
+            fullConfig.put("targetFolderId115", targetFolderId115);
         }
 
         return fullConfig;
@@ -284,6 +311,28 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
                 config.setConfigData(JSONUtil.toJsonStr(tmdbConfig));
                 config.setIsActive(true);
                 config.setRemark("TMDB影视数据库配置");
+                configMapper.insert(config);
+            }
+
+            // 6. 保存115配置
+            Map<String, Object> config115 = new HashMap<>();
+            if (configData.containsKey("enable115Transfer")) {
+                config115.put("enable115Transfer", configData.get("enable115Transfer"));
+            }
+            if (configData.containsKey("cookie115")) {
+                config115.put("cookie115", configData.get("cookie115"));
+            }
+            if (configData.containsKey("targetFolderId115")) {
+                config115.put("targetFolderId115", configData.get("targetFolderId115"));
+            }
+            if (!config115.isEmpty()) {
+                SmartSearchConfig config = new SmartSearchConfig();
+                config.setUserId(userId);
+                config.setConfigName("115网盘配置");
+                config.setConfigType("115_config");
+                config.setConfigData(JSONUtil.toJsonStr(config115));
+                config.setIsActive(true);
+                config.setRemark("115网盘转存配置");
                 configMapper.insert(config);
             }
 
