@@ -15,3 +15,17 @@ export function smartSearch115(tmdbId, name, originalTitle, year) {
     }
   })
 }
+
+/**
+ * 转存115资源
+ */
+export function transfer115(url, code) {
+  return request({
+    url: '/resource115/transfer',
+    method: 'post',
+    params: {
+      url,
+      code
+    }
+  })
+}

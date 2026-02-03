@@ -44,9 +44,9 @@ public class EmbyAuthService {
         url += "/emby/Users/AuthenticateByName";
 
         try {
-            // 伪装成 Forward app 的设备信息
+            // 伪装成Forward app
             String deviceId = "30c9d308e74a46a1811c851bf76a8f77";
-            String forwardVersion = "1.3.13";
+            String forwardVersion = "1.3.14";
 
             JSONObject requestBody = new JSONObject();
             requestBody.set("Username", config.getUsername());
@@ -61,16 +61,24 @@ public class EmbyAuthService {
             HttpResponse response = HttpRequest.post(url)
                     .header("Content-Type", "application/json")
                     .header("X-Emby-Authorization", embyAuth)
-                    .header("User-Agent", "Forward/" + forwardVersion)
+                    .header("User-Agent", "Forward-Standard/" + forwardVersion)
                     .header("Accept", "*/*")
                     .header("Accept-Language", "zh-CN,zh-Hans;q=0.9")
+                    .header("Accept-Encoding", "gzip, deflate, br")
                     .header("Connection", "keep-alive")
                     .body(requestBody.toString())
                     .timeout(config.getTimeout() != null ? config.getTimeout() : 30000)
+                    .setFollowRedirects(true)
                     .execute();
 
             if (!response.isOk()) {
                 log.error("Emby 登录失败: {} - {}", response.getStatus(), response.body());
+
+                // 如果是403，说明被Cloudflare拦截
+                if (response.getStatus() == 403) {
+                    throw new BusinessException("登录被Cloudflare拦截。建议：在Forward app中登录后，将AccessToken填入API Key字段");
+                }
+
                 throw new BusinessException("Emby 登录失败: " + response.getStatus());
             }
 

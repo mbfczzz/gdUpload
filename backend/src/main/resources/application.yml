@@ -151,7 +151,7 @@ app:
 
   # 115网盘配置
   115:
-    cookie: ${115_COOKIE:}  # 115网盘Cookie（从环境变量读取，或直接填写）
+    cookie: ""  # 115网盘Cookie（请填写你的115 Cookie）
     target-folder-id: "0"  # 默认转存目标文件夹ID（0表示根目录）
 
 # TMDB配置

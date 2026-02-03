@@ -63,6 +63,16 @@ export function getItemDetail(itemId) {
 }
 
 /**
+ * 获取电视剧的所有剧集
+ */
+export function getSeriesEpisodes(seriesId) {
+  return request({
+    url: `/emby/series/${seriesId}/episodes`,
+    method: 'get'
+  })
+}
+
+/**
  * 获取所有类型
  */
 export function getAllGenres() {

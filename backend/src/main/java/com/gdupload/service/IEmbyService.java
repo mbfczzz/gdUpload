@@ -65,6 +65,14 @@ public interface IEmbyService {
     EmbyItem getItemDetail(String itemId);
 
     /**
+     * 获取电视剧的所有剧集
+     *
+     * @param seriesId 电视剧ID
+     * @return 剧集列表
+     */
+    List<EmbyItem> getSeriesEpisodes(String seriesId);
+
+    /**
      * 获取所有类型
      *
      * @return 类型列表

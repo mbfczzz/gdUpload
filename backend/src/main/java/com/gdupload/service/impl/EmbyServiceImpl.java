@@ -69,7 +69,7 @@ public class EmbyServiceImpl implements IEmbyService {
 
             // 伪装成 Forward app 的设备ID（可以随机生成或固定）
             String deviceId = "30c9d308e74a46a1811c851bf76a8f77";
-            String forwardVersion = "1.3.13";
+            String forwardVersion = "1.3.14";
 
             // 构建 X-Emby-Authorization 请求头（Forward app 格式）
             String embyAuth = String.format(
@@ -98,7 +98,7 @@ public class EmbyServiceImpl implements IEmbyService {
                     .header("Content-Type", "application/json")
                     .header("X-Emby-Authorization", embyAuth)
                     .header("X-Emby-Token", accessToken)
-                    .header("User-Agent", "Forward/" + forwardVersion)
+                    .header("User-Agent", "Forward-Standard/" + forwardVersion)
                     .header("Accept", "*/*")
                     .header("Accept-Language", "zh-CN,zh-Hans;q=0.9")
                     // 不设置 Accept-Encoding，让 Hutool 自动处理压缩
@@ -352,6 +352,8 @@ public class EmbyServiceImpl implements IEmbyService {
         params.put("Recursive", true);
         // 只请求必要的字段，减少服务器负载
         params.put("Fields", "Path,Genres,ProductionYear,CommunityRating");
+        // 排除Episode类型，只显示Movie和Series
+        params.put("ExcludeItemTypes", "Episode");
 
         if (startIndex != null) {
             params.put("StartIndex", startIndex);
@@ -420,6 +422,37 @@ public class EmbyServiceImpl implements IEmbyService {
                 }
             }
             throw e;
+        }
+    }
+
+    @Override
+    public List<EmbyItem> getSeriesEpisodes(String seriesId) {
+        log.info("开始获取电视剧[{}]的所有剧集", seriesId);
+
+        String userId = embyAuthService.getUserId();
+        String path = "/Shows/" + seriesId + "/Episodes";
+        Map<String, Object> params = new HashMap<>();
+        params.put("UserId", userId);
+        params.put("Fields", "Path,MediaSources,Overview");
+
+        try {
+            JSONObject response = sendGetRequest(path, params);
+            JSONArray items = response.getJSONArray("Items");
+
+            List<EmbyItem> episodes = new ArrayList<>();
+            if (items != null) {
+                for (int i = 0; i < items.size(); i++) {
+                    JSONObject itemJson = items.getJSONObject(i);
+                    EmbyItem episode = parseEmbyItem(itemJson);
+                    episodes.add(episode);
+                }
+            }
+
+            log.info("成功获取电视剧[{}]的剧集，共{}集", seriesId, episodes.size());
+            return episodes;
+        } catch (Exception e) {
+            log.error("获取电视剧[{}]的剧集失败: {}", seriesId, e.getMessage());
+            return new ArrayList<>();
         }
     }
 

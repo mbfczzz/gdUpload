@@ -264,7 +264,59 @@ app:
           border
           stripe
           max-height="600"
+          :expand-row-keys="expandedRows"
+          row-key="id"
+          @expand-change="handleExpandChange"
         >
+          <el-table-column type="expand" width="50">
+            <template #default="{ row }">
+              <div v-if="row.type === 'Series'" class="episode-list">
+                <div v-if="loadingEpisodes[row.id]" class="loading-episodes">
+                  <el-icon class="is-loading"><Loading /></el-icon>
+                  <span>加载剧集中...</span>
+                </div>
+                <div v-else-if="episodesMap[row.id] && episodesMap[row.id].length > 0" class="episodes-container">
+                  <div class="episodes-header">
+                    <span class="episodes-title">剧集列表 (共 {{ episodesMap[row.id].length }} 集)</span>
+                  </div>
+                  <el-table :data="episodesMap[row.id]" border size="small">
+                    <el-table-column type="index" label="#" width="50" align="center" />
+                    <el-table-column prop="name" label="集数" min-width="200">
+                      <template #default="{ row: episode }">
+                        <div class="episode-name">
+                          <el-icon color="#007aff"><VideoPlay /></el-icon>
+                          <span>{{ episode.name }}</span>
+                        </div>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="indexNumber" label="第几集" width="80" align="center">
+                      <template #default="{ row: episode }">
+                        <el-tag size="small" type="info">E{{ episode.indexNumber }}</el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="parentIndexNumber" label="第几季" width="80" align="center">
+                      <template #default="{ row: episode }">
+                        <el-tag size="small" type="primary">S{{ episode.parentIndexNumber }}</el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="runTimeTicks" label="时长" width="100" align="center">
+                      <template #default="{ row: episode }">
+                        <span v-if="episode.runTimeTicks">{{ formatDuration(episode.runTimeTicks) }}</span>
+                        <span v-else class="text-muted">-</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="overview" label="简介" min-width="300" show-overflow-tooltip>
+                      <template #default="{ row: episode }">
+                        <span v-if="episode.overview">{{ episode.overview }}</span>
+                        <span v-else class="text-muted">暂无简介</span>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+                <el-empty v-else description="暂无剧集数据" :image-size="60" />
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column type="index" label="#" width="60" align="center" :index="(index) => (currentPage - 1) * pageSize + index + 1" />
           <el-table-column prop="name" label="名称" min-width="200" show-overflow-tooltip>
             <template #default="{ row }">
@@ -791,6 +843,7 @@ import {
   getAllLibraries,
   getLibraryItemsPaged,
   getItemDetail,
+  getSeriesEpisodes,
   getAllGenres,
   getAllTags,
   getAllStudios,
@@ -802,7 +855,7 @@ import { searchSubscribe, searchByKeyword, transferToAlipan, batchValidateLinks,
 import { createBatchTask, startTask } from '@/api/subscribeBatch'
 import { getFullConfig } from '@/api/smartSearchConfig'
 import { saveTransferHistory, batchCheckTransferStatus, getHistoryByEmbyItemId } from '@/api/transferHistory'
-import { smartSearch115 } from '@/api/resource115'
+import { smartSearch115, transfer115 } from '@/api/resource115'
 
 // 状态
 const testing = ref(false)
@@ -825,6 +878,11 @@ const libraryItems = ref([])
 const currentLibrary = ref(null)
 const currentItem = ref(null)
 const searchKeyword = ref('')
+
+// 剧集展开相关
+const expandedRows = ref([])
+const episodesMap = ref({})
+const loadingEpisodes = ref({})
 
 // 分页
 const currentPage = ref(1)
@@ -1032,6 +1090,50 @@ const viewLibraryItems = async (library) => {
   currentPage.value = 1
   itemsDialogVisible.value = true
   await loadLibraryItems()
+}
+
+// 处理表格行展开
+const handleExpandChange = async (row, expandedRowsData) => {
+  // 如果不是电视剧，不处理
+  if (row.type !== 'Series') {
+    return
+  }
+
+  // 检查是否是展开操作
+  const isExpanding = expandedRowsData.some(r => r.id === row.id)
+
+  if (isExpanding) {
+    // 如果已经加载过剧集，不重复加载
+    if (episodesMap.value[row.id]) {
+      return
+    }
+
+    // 加载剧集列表
+    loadingEpisodes.value[row.id] = true
+    try {
+      const res = await getSeriesEpisodes(row.id)
+      episodesMap.value[row.id] = res.data || []
+      console.log(`加载电视剧 [${row.name}] 的剧集，共 ${res.data?.length || 0} 集`)
+    } catch (error) {
+      console.error('加载剧集失败:', error)
+      ElMessage.error('加载剧集失败')
+      episodesMap.value[row.id] = []
+    } finally {
+      loadingEpisodes.value[row.id] = false
+    }
+  }
+}
+
+// 格式化时长（从ticks转换为分钟）
+const formatDuration = (ticks) => {
+  if (!ticks) return '-'
+  const minutes = Math.round(ticks / 600000000) // 1 tick = 100 nanoseconds
+  if (minutes < 60) {
+    return `${minutes}分钟`
+  }
+  const hours = Math.floor(minutes / 60)
+  const mins = minutes % 60
+  return `${hours}小时${mins}分钟`
 }
 
 // 加载媒体库的媒体项
@@ -2351,31 +2453,12 @@ const autoTransferBestMatches = async (results, maxAttempts = 1) => {
 // 转存115资源
 const transfer115Resource = async (resource) => {
   try {
-    // 获取云盘配置（使用第一个配置）
-    if (!cloudConfigs.value || cloudConfigs.value.length === 0) {
-      ElMessage.error('请先配置云盘信息')
-      return
-    }
-
-    const cloudConfig = cloudConfigs.value[0]
-    if (!cloudConfig || !cloudConfig.parentId) {
-      ElMessage.error('请先配置云盘信息')
-      return
-    }
-
     transferring.value = true
-
-    // 构建115分享链接（带访问码）
-    let url = resource.url
-    if (resource.code) {
-      // 如果有访问码，添加到URL中
-      url = `${resource.url}?code=${resource.code}`
-    }
 
     ElMessage.info(`正在转存: ${resource.name}`)
 
-    // 调用转存接口
-    const res = await transferToAlipan(url, cloudConfig.parentId, '115')
+    // 调用115转存接口
+    const res = await transfer115(resource.url, resource.code)
 
     console.log('115资源转存结果:', res)
 
@@ -2390,11 +2473,11 @@ const transfer115Resource = async (resource) => {
       embyItemYear: downloadItem.value.productionYear,
       resourceId: resource.id?.toString(),
       resourceTitle: resource.name,
-      resourceUrl: url,
+      resourceUrl: resource.url,
       matchScore: 100, // 115资源库匹配分数设为100
       cloudType: '115',
-      cloudName: cloudConfig.name,
-      parentId: cloudConfig.parentId,
+      cloudName: '115网盘',
+      parentId: '0',
       transferStatus: isSuccess ? 'success' : 'failed',
       transferMessage: errorMsg
     }
@@ -2407,7 +2490,7 @@ const transfer115Resource = async (resource) => {
 
     if (isSuccess) {
       ElMessage.success({
-        message: `转存成功！\n资源: ${resource.name}\n来源: 115资源库\n云盘: ${cloudConfig.name}`,
+        message: `转存成功！\n资源: ${resource.name}\n来源: 115资源库`,
         duration: 5000,
         showClose: true
       })
@@ -2656,6 +2739,8 @@ onMounted(async () => {
 <style scoped lang="scss">
 .emby-container {
   padding: 20px;
+  max-width: 1600px;
+  margin: 0 auto;
 
   .header-card {
     margin-bottom: 20px;
@@ -2664,26 +2749,58 @@ onMounted(async () => {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
 
       .header-left {
         display: flex;
         align-items: center;
         gap: 16px;
+        flex-wrap: wrap;
+        min-width: 0;
+        flex: 1;
 
         h2 {
           margin: 0;
+          font-size: 24px;
+          font-weight: 600;
+          color: #303133;
+          white-space: nowrap;
+        }
+
+        .el-tag {
+          flex-shrink: 0;
         }
       }
 
       .header-actions {
         display: flex;
-        gap: 10px;
+        gap: 12px;
+        flex-wrap: wrap;
+
+        .el-button {
+          height: 36px;
+          padding: 0 16px;
+          font-size: 14px;
+          border-radius: 6px;
+          transition: all 0.3s;
+
+          .el-icon {
+            margin-right: 6px;
+          }
+
+          &:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+          }
+        }
       }
     }
   }
 
   .config-alert {
     margin-bottom: 20px;
+    border-radius: 8px;
 
     .config-example {
       background: #f5f5f7;
@@ -2704,6 +2821,7 @@ onMounted(async () => {
 
   .sync-alert {
     margin-bottom: 20px;
+    border-radius: 8px;
 
     p {
       margin: 8px 0;
@@ -2718,16 +2836,22 @@ onMounted(async () => {
 
   .info-card {
     margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
   }
 
   .library-card {
     margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
   }
 
   .card-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    font-weight: 600;
+    font-size: 16px;
   }
 
   .library-name,
@@ -2772,6 +2896,13 @@ onMounted(async () => {
 
       .category-tag {
         margin: 0;
+        cursor: pointer;
+        transition: all 0.3s;
+
+        &:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+        }
 
         .count {
           margin-left: 4px;
@@ -2788,6 +2919,8 @@ onMounted(async () => {
       justify-content: space-between;
       align-items: center;
       margin-bottom: 15px;
+      flex-wrap: wrap;
+      gap: 12px;
 
       .total-count {
         font-size: 14px;
@@ -2806,6 +2939,19 @@ onMounted(async () => {
       justify-content: center;
       margin-top: 20px;
       padding: 10px 0;
+    }
+
+    // 优化表格按钮样式
+    .el-table {
+      .el-button--link {
+        padding: 4px 8px;
+        height: auto;
+        font-size: 13px;
+
+        .el-icon {
+          margin-right: 4px;
+        }
+      }
     }
   }
 
@@ -2841,6 +2987,8 @@ onMounted(async () => {
 
       .result-preview {
         background: #f5f5f7;
+        border-radius: 8px;
+        padding: 12px;
 
         .json-preview {
           margin: 0;
@@ -2858,24 +3006,142 @@ onMounted(async () => {
       }
     }
   }
+
+  // 剧集列表样式
+  .episode-list {
+    padding: 16px 24px;
+    background: #fafafa;
+
+    .loading-episodes {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 24px;
+      color: #909399;
+
+      .el-icon {
+        font-size: 20px;
+      }
+    }
+
+    .episodes-container {
+      .episodes-header {
+        margin-bottom: 12px;
+        padding-bottom: 8px;
+        border-bottom: 2px solid #e5e5e7;
+
+        .episodes-title {
+          font-size: 15px;
+          font-weight: 600;
+          color: #303133;
+        }
+      }
+
+      .episode-name {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+
+        .el-icon {
+          font-size: 16px;
+        }
+      }
+    }
+  }
 }
 
 // 滚动条样式
-.category-list::-webkit-scrollbar {
+.category-list::-webkit-scrollbar,
+.json-preview::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
-.category-list::-webkit-scrollbar-track {
+.category-list::-webkit-scrollbar-track,
+.json-preview::-webkit-scrollbar-track {
   background: #f5f5f7;
   border-radius: 3px;
 }
 
-.category-list::-webkit-scrollbar-thumb {
+.category-list::-webkit-scrollbar-thumb,
+.json-preview::-webkit-scrollbar-thumb {
   background: #d1d1d6;
   border-radius: 3px;
 
   &:hover {
     background: #b0b0b5;
+  }
+}
+
+// 响应式设计
+@media (max-width: 768px) {
+  .emby-container {
+    padding: 12px;
+
+    .header-card .header-content {
+      flex-direction: column;
+      align-items: flex-start;
+
+      .header-actions {
+        width: 100%;
+
+        .el-button {
+          flex: 1;
+          min-width: 0;
+        }
+      }
+    }
+
+    .items-dialog-content .dialog-toolbar {
+      flex-direction: column;
+      align-items: flex-start;
+    }
+  }
+}
+
+// 优化对话框样式
+:deep(.el-dialog) {
+  border-radius: 12px;
+
+  .el-dialog__header {
+    padding: 20px 24px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+
+  .el-dialog__body {
+    padding: 24px;
+  }
+}
+
+// 优化表格样式
+:deep(.el-table) {
+  border-radius: 8px;
+  overflow: hidden;
+
+  th {
+    background-color: #fafafa;
+    font-weight: 600;
+  }
+
+  .el-table__row {
+    transition: background-color 0.3s;
+
+    &:hover {
+      background-color: #f5f7fa;
+    }
+  }
+}
+
+// 优化描述列表样式
+:deep(.el-descriptions) {
+  .el-descriptions__label {
+    font-weight: 600;
+    color: #606266;
+  }
+
+  .el-descriptions__content {
+    color: #303133;
   }
 }
 </style>

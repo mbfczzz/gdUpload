@@ -900,19 +900,44 @@ onMounted(() => {
 
   .header-card {
     margin-bottom: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 
     .header-content {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
 
       h2 {
         margin: 0;
+        font-size: 24px;
+        font-weight: 600;
+        color: #303133;
       }
 
       .header-actions {
         display: flex;
-        gap: 10px;
+        gap: 12px;
+        flex-wrap: wrap;
+
+        .el-button {
+          height: 36px;
+          padding: 0 16px;
+          font-size: 14px;
+          border-radius: 6px;
+          transition: all 0.3s;
+
+          .el-icon {
+            margin-right: 6px;
+          }
+
+          &:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+          }
+        }
       }
     }
   }
@@ -920,12 +945,27 @@ onMounted(() => {
   .config-section {
     margin-bottom: 20px;
 
+    .el-card {
+      border-radius: 8px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+      transition: all 0.3s;
+
+      &:hover {
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+      }
+    }
+
     .section-header {
       display: flex;
       align-items: center;
       gap: 8px;
       font-weight: 600;
       font-size: 16px;
+      color: #303133;
+
+      .el-icon {
+        font-size: 20px;
+      }
     }
   }
 
@@ -933,6 +973,7 @@ onMounted(() => {
     font-size: 12px;
     color: #909399;
     margin-top: 4px;
+    line-height: 1.5;
 
     a {
       color: #409eff;
@@ -960,10 +1001,37 @@ onMounted(() => {
 
   :deep(.el-form-item) {
     margin-bottom: 24px;
+
+    .el-form-item__label {
+      font-weight: 500;
+      color: #606266;
+    }
   }
 
   :deep(.el-slider) {
     margin-right: 20px;
+  }
+
+  :deep(.el-input),
+  :deep(.el-select),
+  :deep(.el-input-number) {
+    .el-input__wrapper {
+      border-radius: 6px;
+      transition: all 0.3s;
+
+      &:hover {
+        box-shadow: 0 0 0 1px #409eff inset;
+      }
+    }
+  }
+
+  :deep(.el-switch) {
+    height: 24px;
+
+    .el-switch__core {
+      height: 24px;
+      border-radius: 12px;
+    }
   }
 
   .cloud-config-item {
@@ -975,7 +1043,76 @@ onMounted(() => {
 
     .el-card {
       border: 1px solid #e5e5e7;
+      border-radius: 8px;
+      transition: all 0.3s;
+
+      &:hover {
+        border-color: #409eff;
+        box-shadow: 0 2px 12px rgba(64, 158, 255, 0.15);
+      }
     }
+  }
+
+  // 优化按钮组样式
+  .el-button-group {
+    .el-button {
+      border-radius: 0;
+
+      &:first-child {
+        border-top-left-radius: 6px;
+        border-bottom-left-radius: 6px;
+      }
+
+      &:last-child {
+        border-top-right-radius: 6px;
+        border-bottom-right-radius: 6px;
+      }
+    }
+  }
+}
+
+// 响应式设计
+@media (max-width: 768px) {
+  .smart-search-config-container {
+    padding: 12px;
+
+    .header-card .header-content {
+      flex-direction: column;
+      align-items: flex-start;
+
+      .header-actions {
+        width: 100%;
+
+        .el-button {
+          flex: 1;
+          min-width: 0;
+        }
+      }
+    }
+  }
+}
+
+// 优化对话框样式
+:deep(.el-dialog) {
+  border-radius: 12px;
+
+  .el-dialog__header {
+    padding: 20px 24px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+
+  .el-dialog__body {
+    padding: 24px;
+  }
+}
+
+// 优化Alert样式
+:deep(.el-alert) {
+  border-radius: 8px;
+  padding: 12px 16px;
+
+  .el-alert__title {
+    font-weight: 500;
   }
 }
 </style>

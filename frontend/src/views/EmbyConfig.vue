@@ -26,11 +26,13 @@
 
         <el-table-column prop="serverUrl" label="服务器地址" min-width="200" show-overflow-tooltip />
 
-        <el-table-column prop="apiKey" label="认证方式" width="120" align="center">
+        <el-table-column prop="apiKey" label="认证方式" width="150" align="center">
           <template #default="{ row }">
-            <el-tag v-if="row.apiKey" type="primary">API Key</el-tag>
-            <el-tag v-else-if="row.username" type="warning">用户名密码</el-tag>
-            <el-tag v-else type="info">未配置</el-tag>
+            <div style="display: flex; flex-direction: column; gap: 4px; align-items: center;">
+              <el-tag v-if="row.apiKey" type="success" size="small">API Key</el-tag>
+              <el-tag v-if="row.username" type="warning" size="small">用户名密码</el-tag>
+              <el-tag v-if="!row.apiKey && !row.username" type="info" size="small">未配置</el-tag>
+            </div>
           </template>
         </el-table-column>
 
@@ -94,28 +96,55 @@
           <el-input v-model="form.serverUrl" placeholder="http://your-emby-server:8096" />
         </el-form-item>
 
-        <el-divider content-position="left">认证方式</el-divider>
+        <el-divider content-position="left">认证方式（优先使用API Key）</el-divider>
 
-        <el-form-item label="认证类型">
-          <el-radio-group v-model="authType">
-            <el-radio label="apiKey">API Key</el-radio>
-            <el-radio label="password">用户名密码</el-radio>
-          </el-radio-group>
+        <el-alert
+          title="推荐：从Forward抓包获取API Key和用户ID"
+          type="info"
+          :closable="false"
+          style="margin-bottom: 15px;"
+        >
+          <template #default>
+            <div style="font-size: 13px; line-height: 1.8;">
+              <p style="margin: 0 0 8px 0;"><strong>方法1：使用API Key（推荐，不会被Cloudflare拦截）</strong></p>
+              <p style="margin: 0 0 4px 0; padding-left: 12px;">1. 在iPhone上安装抓包工具（如Stream）</p>
+              <p style="margin: 0 0 4px 0; padding-left: 12px;">2. 开启抓包，打开Forward app</p>
+              <p style="margin: 0 0 4px 0; padding-left: 12px;">3. 在抓包记录中找到Emby API请求</p>
+              <p style="margin: 0 0 4px 0; padding-left: 12px;">4. 复制请求头中的 <code>X-Emby-Token</code> 值到"API Key"字段</p>
+              <p style="margin: 0 0 12px 0; padding-left: 12px;">5. 复制 <code>X-Emby-Authorization</code> 中的 <code>Emby UserId="xxx"</code> 值到"用户ID"字段</p>
+              <p style="margin: 0;"><strong>方法2：使用用户名密码（备用，可能被Cloudflare拦截）</strong></p>
+            </div>
+          </template>
+        </el-alert>
+
+        <el-form-item label="API Key">
+          <el-input
+            v-model="form.apiKey"
+            type="password"
+            show-password
+            placeholder="从Forward抓包获取的AccessToken（推荐）"
+            clearable
+          />
         </el-form-item>
 
-        <el-form-item label="API Key" v-if="authType === 'apiKey'" prop="apiKey">
-          <el-input v-model="form.apiKey" type="password" show-password placeholder="输入 API Key" />
+        <el-form-item label="用户ID">
+          <el-input
+            v-model="form.userId"
+            placeholder="从Forward抓包获取的UserId（使用API Key时必填）"
+            clearable
+          />
+          <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+            在Forward请求头X-Emby-Authorization中找到 Emby UserId="xxx" 的值
+          </div>
         </el-form-item>
 
-        <template v-if="authType === 'password'">
-          <el-form-item label="用户名" prop="username">
-            <el-input v-model="form.username" placeholder="输入用户名" />
-          </el-form-item>
+        <el-form-item label="用户名">
+          <el-input v-model="form.username" placeholder="Emby用户名（备用）" clearable />
+        </el-form-item>
 
-          <el-form-item label="密码" prop="password">
-            <el-input v-model="form.password" type="password" show-password placeholder="输入密码" />
-          </el-form-item>
-        </template>
+        <el-form-item label="密码">
+          <el-input v-model="form.password" type="password" show-password placeholder="Emby密码（备用）" clearable />
+        </el-form-item>
 
         <el-divider content-position="left">其他设置</el-divider>
 
@@ -164,7 +193,6 @@ const saving = ref(false)
 const configs = ref([])
 const dialogVisible = ref(false)
 const dialogTitle = ref('添加配置')
-const authType = ref('password')
 const formRef = ref(null)
 
 const form = ref({
@@ -188,15 +216,6 @@ const rules = {
   serverUrl: [
     { required: true, message: '请输入服务器地址', trigger: 'blur' },
     { pattern: /^https?:\/\/.+/, message: '请输入有效的URL', trigger: 'blur' }
-  ],
-  apiKey: [
-    { required: authType.value === 'apiKey', message: '请输入API Key', trigger: 'blur' }
-  ],
-  username: [
-    { required: authType.value === 'password', message: '请输入用户名', trigger: 'blur' }
-  ],
-  password: [
-    { required: authType.value === 'password', message: '请输入密码', trigger: 'blur' }
   ]
 }
 
@@ -216,7 +235,6 @@ const loadConfigs = async () => {
 // 显示添加对话框
 const showAddDialog = () => {
   dialogTitle.value = '添加配置'
-  authType.value = 'password'
   form.value = {
     id: null,
     configName: '',
@@ -236,7 +254,6 @@ const showAddDialog = () => {
 // 编辑配置
 const handleEdit = (row) => {
   dialogTitle.value = '编辑配置'
-  authType.value = row.apiKey ? 'apiKey' : 'password'
   form.value = { ...row }
   dialogVisible.value = true
 }
@@ -248,19 +265,22 @@ const handleSave = async () => {
   await formRef.value.validate(async (valid) => {
     if (!valid) return
 
+    // 至少需要配置一种认证方式
+    if (!form.value.apiKey && !form.value.username) {
+      ElMessage.warning('请至少配置一种认证方式（API Key 或 用户名密码）')
+      return
+    }
+
+    // 如果配置了API Key，必须填写userId
+    if (form.value.apiKey && !form.value.userId) {
+      ElMessage.warning('使用API Key时必须填写用户ID')
+      return
+    }
+
     saving.value = true
 
     try {
-      // 根据认证类型清空不需要的字段
-      const data = { ...form.value }
-      if (authType.value === 'apiKey') {
-        data.username = ''
-        data.password = ''
-      } else {
-        data.apiKey = ''
-      }
-
-      const res = await saveConfig(data)
+      const res = await saveConfig(form.value)
       if (res.code === 200) {
         ElMessage.success('保存成功')
         dialogVisible.value = false

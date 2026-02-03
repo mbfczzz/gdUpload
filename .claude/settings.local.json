@@ -10,7 +10,10 @@
       "Bash(ls:*)",
       "Bash(findstr:*)",
       "Bash(cmd.exe /c check_compile.bat)",
-      "Bash(mysql:*)"
+      "Bash(mysql:*)",
+      "Bash(npm run build:*)",
+      "Bash(mvn clean package:*)",
+      "Bash(./mvnw clean package:*)"
     ]
   }
 }

@@ -408,45 +408,104 @@ onMounted(() => {
 <style scoped>
 .resource115-container {
   padding: 20px;
+  max-width: 1600px;
+  margin: 0 auto;
 }
 
 .header-card {
   margin-bottom: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 
 .header-content {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
 }
 
 .header-left {
   display: flex;
   align-items: center;
-  gap: 15px;
+  gap: 16px;
+  flex-wrap: wrap;
+  min-width: 0;
+  flex: 1;
 }
 
 .header-left h2 {
   margin: 0;
   font-size: 24px;
+  font-weight: 600;
+  color: #303133;
+  white-space: nowrap;
+}
+
+.header-left .el-tag {
+  flex-shrink: 0;
 }
 
 .header-actions {
   display: flex;
-  gap: 10px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.header-actions .el-button {
+  height: 36px;
+  padding: 0 16px;
+  font-size: 14px;
+  border-radius: 6px;
+  transition: all 0.3s;
+}
+
+.header-actions .el-button .el-icon {
+  margin-right: 6px;
+}
+
+.header-actions .el-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .search-card {
   margin-bottom: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 
 .table-card {
   margin-bottom: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
 }
 
 .pagination-container {
   margin-top: 20px;
   display: flex;
   justify-content: center;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .resource115-container {
+    padding: 12px;
+  }
+
+  .header-content {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .header-actions {
+    width: 100%;
+  }
+
+  .header-actions .el-button {
+    flex: 1;
+    min-width: 0;
+  }
 }
 </style>

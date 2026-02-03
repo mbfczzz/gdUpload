@@ -130,6 +130,18 @@ public class EmbyController {
     }
 
     /**
+     * 获取电视剧的所有剧集
+     *
+     * @param seriesId 电视剧ID
+     */
+    @GetMapping("/series/{seriesId}/episodes")
+    public Result<List<EmbyItem>> getSeriesEpisodes(@PathVariable String seriesId) {
+        log.info("获取电视剧剧集列表: seriesId={}", seriesId);
+        List<EmbyItem> episodes = embyService.getSeriesEpisodes(seriesId);
+        return Result.success(episodes);
+    }
+
+    /**
      * 获取所有类型（从数据库）
      * 注意：首次使用前需要先调用 /emby/sync 接口同步数据
      */

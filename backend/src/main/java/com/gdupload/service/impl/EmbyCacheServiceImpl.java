@@ -101,7 +101,8 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
         // 检查数据库是否有数据
         LambdaQueryWrapper<EmbyItemCache> countWrapper = new LambdaQueryWrapper<>();
         countWrapper.eq(EmbyItemCache::getEmbyConfigId, configId)
-                .eq(EmbyItemCache::getParentId, libraryId);
+                .eq(EmbyItemCache::getParentId, libraryId)
+                .ne(EmbyItemCache::getType, "Episode"); // 排除Episode类型
         Long cacheCount = itemCacheMapper.selectCount(countWrapper);
 
         if (cacheCount == 0) {
@@ -114,6 +115,7 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
         LambdaQueryWrapper<EmbyItemCache> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(EmbyItemCache::getEmbyConfigId, configId)
                 .eq(EmbyItemCache::getParentId, libraryId)
+                .ne(EmbyItemCache::getType, "Episode") // 排除Episode类型
                 .orderByDesc(EmbyItemCache::getUpdateTime);
 
         Page<EmbyItemCache> cachePage = itemCacheMapper.selectPage(page, wrapper);
