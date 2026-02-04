@@ -121,7 +121,16 @@
               <div class="form-tip">
                 必须与搜索结果中的 cloudType 完全一致，常见值：
                 <code>channel_alipan</code>（阿里云盘）、
-                <code>channel_189</code>（天翼云盘）
+                <code>channel_189</code>（天翼云盘）、
+                <code>channel_115</code>（115网盘）
+              </div>
+            </el-form-item>
+
+            <el-form-item label="优先级">
+              <el-input-number v-model="cloud.priority" :min="1" :max="100" />
+              <span style="margin-left: 10px;">数字越小优先级越高（1最高）</span>
+              <div class="form-tip">
+                转存时会优先尝试优先级高的云盘。建议：天翼云盘=1，阿里云盘=2，115网盘=3
               </div>
             </el-form-item>
 
@@ -876,6 +885,7 @@ const addCloudConfig = () => {
     name: `云盘配置 ${config.value.cloudConfigs.length + 1}`,
     cloudType: '',
     parentId: '',
+    priority: config.value.cloudConfigs.length + 1, // 默认优先级递增
     remark: ''
   })
   ElMessage.success('已添加新的云盘配置')

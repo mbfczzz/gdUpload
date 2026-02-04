@@ -46,9 +46,9 @@ public interface ITransferHistoryService {
      * 批量检查媒体项的转存状态
      *
      * @param embyItemIds Emby媒体项ID列表
-     * @return Map<embyItemId, hasSuccessfulTransfer>
+     * @return Map<embyItemId, status> status: "success"(成功), "failed"(失败), "none"(未转存)
      */
-    Map<String, Boolean> batchCheckTransferStatus(List<String> embyItemIds);
+    Map<String, String> batchCheckTransferStatus(List<String> embyItemIds);
 
     /**
      * 获取转存统计信息

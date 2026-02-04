@@ -236,20 +236,54 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
                 log.warn("失败的媒体库: {}", String.join(", ", failedLibraries));
             }
 
-            // 4. 同步类型、标签、工作室
+            // 4. 同步类型、标签、工作室（可选，失败不影响整体）
             log.info("步骤4: 同步类型、标签、工作室...");
 
-            List<EmbyGenre> genres = embyService.getAllGenres();
-            saveGenresToCache(genres);
-            log.info("同步 {} 个类型", genres.size());
+            int genresCount = 0;
+            int tagsCount = 0;
+            int studiosCount = 0;
 
-            List<EmbyGenre> tags = embyService.getAllTags();
-            saveTagsToCache(tags);
-            log.info("同步 {} 个标签", tags.size());
+            List<EmbyGenre> genres = null;
+            try {
+                genres = embyService.getAllGenres();
+                if (genres != null && !genres.isEmpty()) {
+                    saveGenresToCache(genres);
+                    genresCount = genres.size();
+                    log.info("同步 {} 个类型", genresCount);
+                } else {
+                    log.info("没有类型数据，跳过");
+                }
+            } catch (Exception e) {
+                log.warn("同步类型失败（非关键错误，继续执行）: {}", e.getMessage());
+            }
 
-            List<EmbyGenre> studios = embyService.getAllStudios();
-            saveStudiosToCache(studios);
-            log.info("同步 {} 个工作室", studios.size());
+            List<EmbyGenre> tags = null;
+            try {
+                tags = embyService.getAllTags();
+                if (tags != null && !tags.isEmpty()) {
+                    saveTagsToCache(tags);
+                    tagsCount = tags.size();
+                    log.info("同步 {} 个标签", tagsCount);
+                } else {
+                    log.info("没有标签数据，跳过");
+                }
+            } catch (Exception e) {
+                log.warn("同步标签失败（非关键错误，继续执行）: {}", e.getMessage());
+            }
+
+            List<EmbyGenre> studios = null;
+            try {
+                studios = embyService.getAllStudios();
+                if (studios != null && !studios.isEmpty()) {
+                    saveStudiosToCache(studios);
+                    studiosCount = studios.size();
+                    log.info("同步 {} 个工作室", studiosCount);
+                } else {
+                    log.info("没有工作室数据，跳过");
+                }
+            } catch (Exception e) {
+                log.warn("同步工作室失败（非关键错误，继续执行）: {}", e.getMessage());
+            }
 
             long endTime = System.currentTimeMillis();
             long duration = (endTime - startTime) / 1000;
@@ -260,9 +294,9 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
             result.put("successLibraries", successCount);
             result.put("failedLibraries", failedCount);
             result.put("totalItems", totalItems);
-            result.put("totalGenres", genres.size());
-            result.put("totalTags", tags.size());
-            result.put("totalStudios", studios.size());
+            result.put("totalGenres", genresCount);
+            result.put("totalTags", tagsCount);
+            result.put("totalStudios", studiosCount);
             result.put("duration", duration + "秒");
 
             if (failedCount > 0) {
@@ -505,8 +539,12 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
         EmbyItemCache existing = itemCacheMapper.selectOne(wrapper);
 
         if (existing != null) {
-            itemCacheMapper.updateById(cache);
+            // 使用 wrapper 更新，避免联合主键冲突
+            cache.setUpdateTime(now);
+            itemCacheMapper.update(cache, wrapper);
         } else {
+            cache.setCreateTime(now);
+            cache.setUpdateTime(now);
             itemCacheMapper.insert(cache);
         }
     }

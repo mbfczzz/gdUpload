@@ -147,8 +147,13 @@ public class EmbyController {
      */
     @GetMapping("/genres")
     public Result<List<EmbyGenre>> getAllGenres(
-            @RequestParam(required = false, defaultValue = "false") Boolean forceRefresh) {
+            @RequestParam(required = false, defaultValue = "false") Boolean forceRefresh,
+            @RequestParam(required = false, defaultValue = "100") Integer limit) {
         List<EmbyGenre> genres = cacheService.getAllGenres(forceRefresh);
+        // 限制返回数量，避免前端卡顿
+        if (limit != null && limit > 0 && genres.size() > limit) {
+            genres = genres.subList(0, limit);
+        }
         return Result.success(genres);
     }
 
@@ -158,8 +163,13 @@ public class EmbyController {
      */
     @GetMapping("/tags")
     public Result<List<EmbyGenre>> getAllTags(
-            @RequestParam(required = false, defaultValue = "false") Boolean forceRefresh) {
+            @RequestParam(required = false, defaultValue = "false") Boolean forceRefresh,
+            @RequestParam(required = false, defaultValue = "100") Integer limit) {
         List<EmbyGenre> tags = cacheService.getAllTags(forceRefresh);
+        // 限制返回数量，避免前端卡顿
+        if (limit != null && limit > 0 && tags.size() > limit) {
+            tags = tags.subList(0, limit);
+        }
         return Result.success(tags);
     }
 
@@ -169,8 +179,13 @@ public class EmbyController {
      */
     @GetMapping("/studios")
     public Result<List<EmbyGenre>> getAllStudios(
-            @RequestParam(required = false, defaultValue = "false") Boolean forceRefresh) {
+            @RequestParam(required = false, defaultValue = "false") Boolean forceRefresh,
+            @RequestParam(required = false, defaultValue = "100") Integer limit) {
         List<EmbyGenre> studios = cacheService.getAllStudios(forceRefresh);
+        // 限制返回数量，避免前端卡顿
+        if (limit != null && limit > 0 && studios.size() > limit) {
+            studios = studios.subList(0, limit);
+        }
         return Result.success(studios);
     }
 

@@ -58,26 +58,41 @@ public class TransferHistoryServiceImpl implements ITransferHistoryService {
     }
 
     @Override
-    public Map<String, Boolean> batchCheckTransferStatus(List<String> embyItemIds) {
+    public Map<String, String> batchCheckTransferStatus(List<String> embyItemIds) {
         if (embyItemIds == null || embyItemIds.isEmpty()) {
             return new HashMap<>();
         }
 
+        // 查询所有相关的转存记录
         LambdaQueryWrapper<TransferHistory> wrapper = new LambdaQueryWrapper<>();
         wrapper.in(TransferHistory::getEmbyItemId, embyItemIds)
-                .eq(TransferHistory::getTransferStatus, "success")
-                .select(TransferHistory::getEmbyItemId)
-                .groupBy(TransferHistory::getEmbyItemId);
+                .orderByDesc(TransferHistory::getCreateTime);
 
-        List<TransferHistory> successList = historyMapper.selectList(wrapper);
+        List<TransferHistory> allHistories = historyMapper.selectList(wrapper);
 
-        // 转换为Map
-        Map<String, Boolean> resultMap = new HashMap<>();
-        for (String itemId : embyItemIds) {
-            resultMap.put(itemId, false);
+        // 按embyItemId分组，取最新的记录
+        Map<String, TransferHistory> latestHistoryMap = new HashMap<>();
+        for (TransferHistory history : allHistories) {
+            String itemId = history.getEmbyItemId();
+            if (!latestHistoryMap.containsKey(itemId)) {
+                latestHistoryMap.put(itemId, history);
+            }
         }
-        for (TransferHistory history : successList) {
-            resultMap.put(history.getEmbyItemId(), true);
+
+        // 构建结果Map
+        Map<String, String> resultMap = new HashMap<>();
+        for (String itemId : embyItemIds) {
+            TransferHistory latestHistory = latestHistoryMap.get(itemId);
+            if (latestHistory == null) {
+                // 没有转存记录
+                resultMap.put(itemId, "none");
+            } else if ("success".equals(latestHistory.getTransferStatus())) {
+                // 最新记录是成功
+                resultMap.put(itemId, "success");
+            } else {
+                // 最新记录是失败
+                resultMap.put(itemId, "failed");
+            }
         }
 
         return resultMap;

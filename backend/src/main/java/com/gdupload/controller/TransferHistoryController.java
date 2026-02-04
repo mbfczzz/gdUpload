@@ -71,9 +71,9 @@ public class TransferHistoryController {
      * 批量检查媒体项的转存状态
      */
     @PostMapping("/batch-check")
-    public Result<Map<String, Boolean>> batchCheckTransferStatus(@RequestBody List<String> embyItemIds) {
+    public Result<Map<String, String>> batchCheckTransferStatus(@RequestBody List<String> embyItemIds) {
         try {
-            Map<String, Boolean> statusMap = historyService.batchCheckTransferStatus(embyItemIds);
+            Map<String, String> statusMap = historyService.batchCheckTransferStatus(embyItemIds);
             return Result.success(statusMap);
         } catch (Exception e) {
             log.error("批量检查转存状态失败", e);

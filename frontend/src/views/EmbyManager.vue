@@ -235,31 +235,54 @@ app:
     >
       <div class="items-dialog-content">
         <div class="dialog-toolbar">
-          <el-input
-            v-model="searchKeyword"
-            placeholder="搜索媒体项..."
-            style="width: 300px"
-            clearable
-            @clear="loadLibraryItems"
-          >
-            <template #append>
-              <el-button @click="searchInLibrary">
-                <el-icon><Search /></el-icon>
-              </el-button>
-            </template>
-          </el-input>
-          <div>
-            <span class="total-count">共 {{ totalCount }} 项</span>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <el-input
+              v-model="searchKeyword"
+              placeholder="搜索媒体项..."
+              style="width: 300px"
+              clearable
+              @clear="loadLibraryItems"
+            >
+              <template #append>
+                <el-button @click="searchInLibrary">
+                  <el-icon><Search /></el-icon>
+                </el-button>
+              </template>
+            </el-input>
+            <el-select
+              v-model="transferStatusFilter"
+              placeholder="转存状态"
+              style="width: 140px"
+              clearable
+              @change="applyTransferFilter"
+            >
+              <el-option label="全部" value="" />
+              <el-option label="转存成功" value="success" />
+              <el-option label="转存失败" value="failed" />
+              <el-option label="未转存" value="none" />
+            </el-select>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <el-button
+              type="primary"
+              @click="handleBatchDownload"
+              :loading="batchDownloading"
+              :disabled="filteredLibraryItems.length === 0 || transferStatusFilter === 'success'"
+            >
+              <el-icon><Download /></el-icon>
+              批量下载当前页
+            </el-button>
+            <span class="total-count">共 {{ totalCount }} 项 (显示 {{ filteredLibraryItems.length }} 项)</span>
           </div>
         </div>
 
-        <el-empty v-if="!loadingItems && libraryItems.length === 0" description="暂无媒体项数据">
+        <el-empty v-if="!loadingItems && filteredLibraryItems.length === 0" description="暂无媒体项数据">
           <el-button type="primary" @click="loadLibraryItems">刷新数据</el-button>
         </el-empty>
 
         <el-table
           v-else
-          :data="libraryItems"
+          :data="filteredLibraryItems"
           v-loading="loadingItems"
           border
           stripe
@@ -386,6 +409,19 @@ app:
               <span v-else class="text-muted">-</span>
             </template>
           </el-table-column>
+          <el-table-column label="转存状态" width="100" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="transferStatusMap[row.id] === 'success'" type="success" size="small">
+                已转存
+              </el-tag>
+              <el-tag v-else-if="transferStatusMap[row.id] === 'failed'" type="danger" size="small">
+                转存失败
+              </el-tag>
+              <el-tag v-else type="info" size="small">
+                未转存
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column label="操作" width="280" fixed="right">
             <template #default="{ row }">
               <el-button type="primary" link size="small" @click="viewItemDetail(row)">
@@ -403,7 +439,7 @@ app:
                 搜索下载
               </el-button>
               <el-button
-                v-if="(row.type === 'Movie' || row.type === 'Series') && transferStatusMap[row.id]"
+                v-if="(row.type === 'Movie' || row.type === 'Series') && transferStatusMap[row.id] && transferStatusMap[row.id] !== 'none'"
                 type="info"
                 link
                 size="small"
@@ -835,7 +871,7 @@ app:
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   testEmbyConnection,
@@ -866,6 +902,7 @@ const loadingItems = ref(false)
 const loadingGenres = ref(false)
 const loadingTags = ref(false)
 const loadingStudios = ref(false)
+const batchDownloading = ref(false) // 批量下载状态
 
 // 数据
 const serverInfo = ref(null)
@@ -878,6 +915,7 @@ const libraryItems = ref([])
 const currentLibrary = ref(null)
 const currentItem = ref(null)
 const searchKeyword = ref('')
+const transferStatusFilter = ref('') // 转存状态筛选
 
 // 剧集展开相关
 const expandedRows = ref([])
@@ -888,6 +926,26 @@ const loadingEpisodes = ref({})
 const currentPage = ref(1)
 const pageSize = ref(50)
 const totalCount = ref(0)
+
+// 计算属性：过滤后的媒体项列表
+const filteredLibraryItems = computed(() => {
+  if (!transferStatusFilter.value) {
+    return libraryItems.value
+  }
+
+  if (transferStatusFilter.value === 'success') {
+    // 转存成功
+    return libraryItems.value.filter(item => transferStatusMap.value[item.id] === 'success')
+  } else if (transferStatusFilter.value === 'failed') {
+    // 转存失败
+    return libraryItems.value.filter(item => transferStatusMap.value[item.id] === 'failed')
+  } else if (transferStatusFilter.value === 'none') {
+    // 未转存
+    return libraryItems.value.filter(item => !transferStatusMap.value[item.id] || transferStatusMap.value[item.id] === 'none')
+  }
+
+  return libraryItems.value
+})
 
 // 对话框
 const itemsDialogVisible = ref(false)
@@ -1174,6 +1232,9 @@ const loadTransferStatus = async () => {
     const res = await batchCheckTransferStatus(itemIds)
     if (res.data) {
       transferStatusMap.value = res.data
+      console.log('=== 转存状态加载完成 ===')
+      console.log('状态映射:', transferStatusMap.value)
+      console.log('示例数据:', Object.entries(transferStatusMap.value).slice(0, 5))
     }
   } catch (error) {
     console.error('加载转存状态失败:', error)
@@ -1184,6 +1245,19 @@ const loadTransferStatus = async () => {
 const handlePageChange = (page) => {
   currentPage.value = page
   loadLibraryItems()
+}
+
+// 应用转存状态筛选
+const applyTransferFilter = () => {
+  // 筛选不需要重新加载数据，只需要触发计算属性更新
+  console.log('=== 应用转存状态筛选 ===')
+  console.log('筛选条件:', transferStatusFilter.value)
+  console.log('总媒体项数:', libraryItems.value.length)
+  console.log('筛选后数量:', filteredLibraryItems.value.length)
+  console.log('前5个筛选结果的状态:')
+  filteredLibraryItems.value.slice(0, 5).forEach(item => {
+    console.log(`  - ${item.name}: ${transferStatusMap.value[item.id]}`)
+  })
 }
 
 // 每页数量改变
@@ -1635,8 +1709,8 @@ const handleSearchByKeyword = async () => {
 
       ElMessage.success(`找到 ${qualifiedResults.length} 个合格结果，准备自动转存`)
 
-      // 自动转存最佳匹配（只尝试1次）
-      await autoTransferBestMatches(qualifiedResults, 1)
+      // 自动转存最佳匹配（尝试所有结果直到成功，最多20个）
+      await autoTransferBestMatches(qualifiedResults)
     } else {
       ElMessage.warning('未找到搜索结果')
     }
@@ -2244,11 +2318,77 @@ const handleSelectAndDownload = async (row) => {
 }
 
 // 转存到阿里云盘
-// 自动转存最佳匹配的资源（只尝试1次）
-const autoTransferBestMatches = async (results, maxAttempts = 1) => {
+// 自动转存最佳匹配的资源（尝试所有结果直到成功）
+const autoTransferBestMatches = async (results, maxAttempts = null) => {
+  // 如果没有指定最大尝试次数，则尝试所有结果（最多10个，避免过多低质量结果）
+  const actualMaxAttempts = maxAttempts || Math.min(results.length, 10)
+
   console.log(`\n=== 开始自动转存 ===`)
   console.log(`候选资源数: ${results.length}`)
-  console.log(`最多尝试: ${maxAttempts} 次`)
+  console.log(`最多尝试: ${actualMaxAttempts} 次`)
+
+  // 按云盘类型分组
+  const groupedResults = {}
+
+  results.forEach(result => {
+    const cloudType = result.cloudType
+    if (!groupedResults[cloudType]) {
+      groupedResults[cloudType] = []
+    }
+    groupedResults[cloudType].push(result)
+  })
+
+  console.log(`\n=== 云盘资源分布 ===`)
+  Object.keys(groupedResults).forEach(cloudType => {
+    console.log(`${cloudType}: ${groupedResults[cloudType].length} 个`)
+  })
+
+  // 获取云盘配置并按优先级排序
+  const cloudConfigsWithPriority = cloudConfigs.value
+    .filter(config => groupedResults[config.cloudType]) // 只保留有资源的云盘
+    .sort((a, b) => (a.priority || 999) - (b.priority || 999)) // 按优先级排序，数字越小越优先
+
+  console.log(`\n=== 云盘优先级排序 ===`)
+  cloudConfigsWithPriority.forEach((config, i) => {
+    console.log(`${i + 1}. ${config.cloudType} (优先级: ${config.priority || '未设置'}) - ${groupedResults[config.cloudType].length} 个资源`)
+  })
+
+  // 按优先级交错选择资源
+  const sortedResults = []
+  const indices = {} // 记录每个云盘类型的当前索引
+
+  cloudConfigsWithPriority.forEach(config => {
+    indices[config.cloudType] = 0
+  })
+
+  // 循环选择，每轮按优先级顺序选择
+  while (sortedResults.length < actualMaxAttempts) {
+    let addedInThisRound = false
+
+    for (const config of cloudConfigsWithPriority) {
+      const cloudType = config.cloudType
+      const resources = groupedResults[cloudType]
+
+      if (indices[cloudType] < resources.length) {
+        sortedResults.push(resources[indices[cloudType]++])
+        addedInThisRound = true
+
+        if (sortedResults.length >= actualMaxAttempts) {
+          break
+        }
+      }
+    }
+
+    // 如果这一轮没有添加任何资源，说明所有云盘都用完了
+    if (!addedInThisRound) {
+      break
+    }
+  }
+
+  console.log(`\n=== 优先级排序后 ===`)
+  sortedResults.slice(0, 10).forEach((r, i) => {
+    console.log(`${i + 1}. [${r.cloudType}] ${r.title.substring(0, 50)} - 评分: ${r.matchScore?.toFixed(1)}`)
+  })
 
   transferring.value = true
 
@@ -2259,11 +2399,11 @@ const autoTransferBestMatches = async (results, maxAttempts = 1) => {
     let attemptCount = 0 // 实际尝试转存的次数
     let successTransfer = null
 
-    // 遍历所有候选资源，但最多只尝试转存 maxAttempts 次
-    for (let i = 0; i < results.length && attemptCount < maxAttempts; i++) {
-      const resource = results[i]
+    // 遍历排序后的资源
+    for (let i = 0; i < sortedResults.length && attemptCount < actualMaxAttempts; i++) {
+      const resource = sortedResults[i]
 
-      console.log(`\n--- 检查资源 ${i + 1}/${results.length} ---`)
+      console.log(`\n--- 检查资源 ${i + 1}/${sortedResults.length} ---`)
       console.log(`资源: ${resource.title}`)
       console.log(`评分: ${resource.matchScore?.toFixed(1)}`)
       console.log(`cloudType: ${resource.cloudType}`)
@@ -2345,7 +2485,7 @@ const autoTransferBestMatches = async (results, maxAttempts = 1) => {
           })
 
           // 更新转存状态
-          transferStatusMap.value[downloadItem.value.id] = true
+          transferStatusMap.value[downloadItem.value.id] = 'success'
 
           // 关闭对话框
           downloadDialogVisible.value = false
@@ -2361,7 +2501,7 @@ const autoTransferBestMatches = async (results, maxAttempts = 1) => {
           })
 
           // 如果还没达到最大尝试次数，继续下一个
-          if (attemptCount < maxAttempts) {
+          if (attemptCount < actualMaxAttempts) {
             console.log(`继续尝试下一个资源...`)
             await new Promise(resolve => setTimeout(resolve, 1000)) // 等待1秒
           }
@@ -2496,7 +2636,7 @@ const transfer115Resource = async (resource) => {
       })
 
       // 更新转存状态
-      transferStatusMap.value[downloadItem.value.id] = true
+      transferStatusMap.value[downloadItem.value.id] = 'success'
 
       // 关闭对话框
       downloadDialogVisible.value = false
@@ -2559,6 +2699,483 @@ const transfer115Resource = async (resource) => {
   } finally {
     transferring.value = false
   }
+}
+
+// 批量下载当前页
+const handleBatchDownload = async () => {
+  // 过滤出电影和剧集（使用过滤后的列表）
+  const downloadableItems = filteredLibraryItems.value.filter(
+    item => item.type === 'Movie' || item.type === 'Series'
+  )
+
+  if (downloadableItems.length === 0) {
+    ElMessage.warning('当前页没有可下载的媒体项（仅支持电影和剧集）')
+    return
+  }
+
+  // 确认操作
+  try {
+    await ElMessageBox.confirm(
+      `确定要批量下载当前页的 ${downloadableItems.length} 个媒体项吗？\n\n此操作将依次搜索并下载每个媒体项，可能需要较长时间。`,
+      '批量下载确认',
+      {
+        confirmButtonText: '开始下载',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    return // 用户取消
+  }
+
+  batchDownloading.value = true
+  let successCount = 0
+  let failCount = 0
+  let skipCount = 0
+
+  ElMessage.info(`开始批量下载，共 ${downloadableItems.length} 个媒体项`)
+
+  for (let i = 0; i < downloadableItems.length; i++) {
+    const item = downloadableItems[i]
+
+    try {
+      ElMessage.info(`[${i + 1}/${downloadableItems.length}] 正在处理: ${item.name}`)
+
+      // 检查是否已经转存过（只跳过成功的）
+      if (transferStatusMap.value[item.id] === 'success') {
+        ElMessage.info(`跳过已转存: ${item.name}`)
+        skipCount++
+        continue
+      }
+
+      // 提取 TMDB ID
+      let tmdbId = null
+      if (item.providerIds && item.providerIds.Tmdb) {
+        tmdbId = item.providerIds.Tmdb
+      }
+
+      // 先尝试从115资源库智能匹配
+      let found115Resource = false
+      try {
+        const res = await smartSearch115(
+          tmdbId,
+          item.name,
+          item.originalTitle,
+          item.productionYear
+        )
+
+        if (res.data) {
+          // 找到匹配的115资源
+          const resource = res.data
+          ElMessage.success(`找到115资源: ${resource.name}`)
+
+          // 设置当前下载项（用于转存历史记录）
+          downloadItem.value = item
+
+          // 直接调用115转存API（不使用transfer115Resource，避免打开对话框）
+          try {
+            ElMessage.info(`正在转存115资源: ${resource.name}`)
+            const transferRes = await transfer115(resource.url, resource.code)
+
+            // 判断转存是否成功
+            const isSuccess = transferRes.code === 200 || transferRes.success === true
+            const errorMsg = transferRes.message || transferRes.msg || transferRes.error || (isSuccess ? '转存成功' : '转存失败')
+
+            // 记录转存历史
+            const historyRecord = {
+              embyItemId: item.id,
+              embyItemName: item.name,
+              embyItemYear: item.productionYear,
+              resourceId: resource.id?.toString(),
+              resourceTitle: resource.name,
+              resourceUrl: resource.url,
+              matchScore: 100,
+              cloudType: '115',
+              cloudName: '115网盘',
+              parentId: '0',
+              transferStatus: isSuccess ? 'success' : 'failed',
+              transferMessage: errorMsg
+            }
+
+            try {
+              await saveTransferHistory(historyRecord)
+            } catch (error) {
+              console.error('保存转存历史失败:', error)
+            }
+
+            if (isSuccess) {
+              ElMessage.success(`转存成功: ${item.name}`)
+              successCount++
+              found115Resource = true
+
+              // 标记为已转存
+              transferStatusMap.value[item.id] = 'success'
+
+              // 等待1秒，避免请求过快
+              await new Promise(resolve => setTimeout(resolve, 1000))
+              continue
+            } else {
+              // 115转存失败，记录日志，继续走搜索引擎逻辑
+              console.log(`115转存失败: ${errorMsg}，将使用搜索引擎搜索`)
+              ElMessage.warning(`115转存失败: ${errorMsg.substring(0, 30)}，尝试搜索引擎...`)
+            }
+          } catch (error) {
+            console.error(`115转存异常 [${item.name}]:`, error)
+            const errorMsg = error.response?.data?.message || error.message || '转存异常'
+
+            // 记录转存历史（异常）
+            try {
+              await saveTransferHistory({
+                embyItemId: item.id,
+                embyItemName: item.name,
+                embyItemYear: item.productionYear,
+                resourceId: resource.id?.toString(),
+                resourceTitle: resource.name,
+                resourceUrl: resource.url,
+                matchScore: 100,
+                cloudType: '115',
+                cloudName: '115网盘',
+                parentId: '0',
+                transferStatus: 'failed',
+                transferMessage: `转存异常: ${errorMsg}`
+              })
+            } catch (err) {
+              console.error('保存转存历史失败:', err)
+            }
+
+            ElMessage.warning(`115转存异常，尝试搜索引擎...`)
+          }
+        }
+      } catch (error) {
+        console.error(`搜索115资源失败 [${item.name}]:`, error)
+      }
+
+      // 如果115资源库没有找到，走搜索引擎逻辑
+      if (!found115Resource) {
+        ElMessage.info(`115资源库未找到，使用搜索引擎搜索: ${item.name}`)
+
+        try {
+          // 设置当前下载项
+          downloadItem.value = item
+
+          // 构建搜索关键词
+          let keyword = item.originalTitle || item.name
+          keyword = cleanSearchKeyword(keyword)
+
+          // 如果有年份，加上年份
+          if (item.productionYear) {
+            keyword += ` ${item.productionYear}`
+          }
+
+          console.log(`搜索关键词: ${keyword}`)
+
+          // 调用搜索接口
+          const searchRes = await searchByKeyword(keyword)
+
+          if (!searchRes || !searchRes.data) {
+            ElMessage.warning(`搜索失败: ${item.name}`)
+            failCount++
+            await new Promise(resolve => setTimeout(resolve, 1000))
+            continue
+          }
+
+          // 解析搜索结果
+          let results = []
+          const channels = searchRes.data?.channels || searchRes.data?.channel_info_list
+
+          if (channels && Array.isArray(channels)) {
+            channels.forEach((channel) => {
+              const channelInfo = channel.channelInfo || {}
+
+              // 处理 messages 数组（阿里云盘格式）
+              if (channel.messages && Array.isArray(channel.messages)) {
+                channel.messages.forEach((message) => {
+                  if (message.cloudLinks && message.cloudLinks.length > 0) {
+                    message.cloudLinks.forEach((link, linkIndex) => {
+                      const rawTitle = message.title || message.text
+                      const cleanTitle = extractTitle(rawTitle)
+
+                      results.push({
+                        id: `${message.messageId}-${linkIndex}`,
+                        messageId: message.messageId,
+                        title: cleanTitle,
+                        rawTitle: rawTitle,
+                        url: link,
+                        link: link,
+                        cloudType: message.cloudType,
+                        channelName: channelInfo.name || '未知来源'
+                      })
+                    })
+                  }
+                })
+              }
+
+              // 处理 list 数组（天翼云盘格式）
+              if (channel.list && Array.isArray(channel.list)) {
+                channel.list.forEach((listItem) => {
+                  if (listItem.cloudLinks && listItem.cloudLinks.length > 0) {
+                    listItem.cloudLinks.forEach((link, linkIndex) => {
+                      const rawTitle = listItem.title || listItem.content
+                      const cleanTitle = extractTitle(rawTitle)
+
+                      results.push({
+                        id: `${listItem.messageId}-${linkIndex}`,
+                        messageId: listItem.messageId,
+                        title: cleanTitle,
+                        rawTitle: rawTitle,
+                        url: link,
+                        link: link,
+                        cloudType: listItem.cloudType,
+                        channelName: channelInfo.name || '未知来源'
+                      })
+                    })
+                  }
+                })
+              }
+            })
+          }
+
+          if (results.length === 0) {
+            ElMessage.warning(`未找到搜索结果: ${item.name}`)
+            failCount++
+            await new Promise(resolve => setTimeout(resolve, 1000))
+            continue
+          }
+
+          // 智能排序
+          results = smartSortResults(results, keyword, item)
+
+          // 按云盘类型分组
+          const groupedResults = {}
+
+          results.forEach(result => {
+            const cloudType = result.cloudType
+            if (!groupedResults[cloudType]) {
+              groupedResults[cloudType] = []
+            }
+            groupedResults[cloudType].push(result)
+          })
+
+          console.log(`\n=== 云盘资源分布 ===`)
+          Object.keys(groupedResults).forEach(cloudType => {
+            console.log(`${cloudType}: ${groupedResults[cloudType].length} 个`)
+          })
+
+          // 获取云盘配置并按优先级排序
+          const cloudConfigsWithPriority = cloudConfigs.value
+            .filter(config => groupedResults[config.cloudType]) // 只保留有资源的云盘
+            .sort((a, b) => (a.priority || 999) - (b.priority || 999)) // 按优先级排序
+
+          console.log(`\n=== 云盘优先级排序 ===`)
+          cloudConfigsWithPriority.forEach((config, i) => {
+            console.log(`${i + 1}. ${config.cloudType} (优先级: ${config.priority || '未设置'}) - ${groupedResults[config.cloudType].length} 个资源`)
+          })
+
+          // 按优先级交错选择资源
+          const sortedResults = []
+          const indices = {}
+          const maxRetries = 10 // 最多尝试10次
+
+          cloudConfigsWithPriority.forEach(config => {
+            indices[config.cloudType] = 0
+          })
+
+          // 循环选择，每轮按优先级顺序选择
+          while (sortedResults.length < maxRetries) {
+            let addedInThisRound = false
+
+            for (const config of cloudConfigsWithPriority) {
+              const cloudType = config.cloudType
+              const resources = groupedResults[cloudType]
+
+              if (indices[cloudType] < resources.length) {
+                sortedResults.push(resources[indices[cloudType]++])
+                addedInThisRound = true
+
+                if (sortedResults.length >= maxRetries) {
+                  break
+                }
+              }
+            }
+
+            // 如果这一轮没有添加任何资源，说明所有云盘都用完了
+            if (!addedInThisRound) {
+              break
+            }
+          }
+
+          console.log(`\n=== 优先级排序后，将尝试 ${sortedResults.length} 个资源 ===`)
+          sortedResults.forEach((r, i) => {
+            console.log(`${i + 1}. [${r.cloudType}] ${r.title.substring(0, 40)}`)
+          })
+
+          // 尝试转存，按优先级顺序尝试
+          let transferSuccess = false
+          let lastError = ''
+
+          for (let retryIndex = 0; retryIndex < sortedResults.length; retryIndex++) {
+            const currentResult = sortedResults[retryIndex]
+
+            if (retryIndex === 0) {
+              ElMessage.info(`找到最佳匹配 [${currentResult.cloudType}]: ${currentResult.title.substring(0, 30)}`)
+            } else {
+              ElMessage.info(`尝试备选方案 ${retryIndex + 1} [${currentResult.cloudType}]: ${currentResult.title.substring(0, 30)}`)
+            }
+
+            // 获取云盘配置
+            const cloudConfig = getCloudConfigByType(currentResult.cloudType)
+
+            if (!cloudConfig || !cloudConfig.parentId) {
+              lastError = `未配置 ${currentResult.cloudType} 云盘`
+              console.log(`跳过: ${lastError}`)
+              continue
+            }
+
+            try {
+              // 转存
+              const transferRes = await transferToAlipan(
+                currentResult.url,
+                cloudConfig.parentId,
+                cloudConfig.cloudType
+              )
+
+              // 判断转存是否成功（兼容多种返回格式）
+              const isSuccess = transferRes && (
+                transferRes.success === true ||
+                transferRes.code === 200 ||
+                transferRes.code === 0 ||
+                transferRes.status === 'success'
+              )
+
+              if (isSuccess) {
+                ElMessage.success(`转存成功: ${item.name}${retryIndex > 0 ? ` (第${retryIndex + 1}次尝试)` : ''}`)
+                successCount++
+                transferSuccess = true
+
+                // 标记为已转存
+                transferStatusMap.value[item.id] = true
+
+                // 保存转存历史
+                try {
+                  await saveTransferHistory({
+                    embyItemId: item.id,
+                    embyItemName: item.name,
+                    embyItemYear: item.productionYear,
+                    resourceId: currentResult.id?.toString(),
+                    resourceTitle: currentResult.title,
+                    resourceUrl: currentResult.url,
+                    matchScore: currentResult.matchScore || 0,
+                    cloudType: currentResult.cloudType,
+                    cloudName: cloudConfig.name,
+                    parentId: cloudConfig.parentId,
+                    transferStatus: 'success',
+                    transferMessage: `转存成功${retryIndex > 0 ? ` (第${retryIndex + 1}次尝试)` : ''}`
+                  })
+                } catch (error) {
+                  console.error('保存转存历史失败:', error)
+                }
+
+                break // 转存成功，跳出重试循环
+              } else {
+                // 转存失败，记录错误信息
+                lastError = transferRes?.message || transferRes?.msg || '转存失败'
+                console.log(`转存失败 (尝试 ${retryIndex + 1}/${sortedResults.length}): ${lastError}`)
+
+                // 记录失败的转存历史
+                try {
+                  await saveTransferHistory({
+                    embyItemId: item.id,
+                    embyItemName: item.name,
+                    embyItemYear: item.productionYear,
+                    resourceId: currentResult.id?.toString(),
+                    resourceTitle: currentResult.title,
+                    resourceUrl: currentResult.url,
+                    matchScore: currentResult.matchScore || 0,
+                    cloudType: currentResult.cloudType,
+                    cloudName: cloudConfig.name,
+                    parentId: cloudConfig.parentId,
+                    transferStatus: 'failed',
+                    transferMessage: `${lastError} (第${retryIndex + 1}次尝试)`
+                  })
+                } catch (error) {
+                  console.error('保存转存历史失败:', error)
+                }
+
+                // 如果不是最后一次尝试，继续下一个
+                if (retryIndex < sortedResults.length - 1) {
+                  ElMessage.warning(`转存失败: ${lastError.substring(0, 50)}，尝试下一个...`)
+                  await new Promise(resolve => setTimeout(resolve, 500))
+                }
+              }
+            } catch (error) {
+              lastError = error.response?.data?.message || error.message || '转存异常'
+              console.error(`转存异常 (尝试 ${retryIndex + 1}/${sortedResults.length}):`, error)
+
+              // 记录异常的转存历史
+              try {
+                await saveTransferHistory({
+                  embyItemId: item.id,
+                  embyItemName: item.name,
+                  embyItemYear: item.productionYear,
+                  resourceId: currentResult.id?.toString(),
+                  resourceTitle: currentResult.title,
+                  resourceUrl: currentResult.url,
+                  matchScore: currentResult.matchScore || 0,
+                  cloudType: currentResult.cloudType,
+                  cloudName: cloudConfig.name,
+                  parentId: cloudConfig.parentId,
+                  transferStatus: 'failed',
+                  transferMessage: `转存异常: ${lastError} (第${retryIndex + 1}次尝试)`
+                })
+              } catch (err) {
+                console.error('保存转存历史失败:', err)
+              }
+
+              // 如果不是最后一次尝试，继续下一个
+              if (retryIndex < sortedResults.length - 1) {
+                ElMessage.warning(`转存异常，尝试下一个...`)
+                await new Promise(resolve => setTimeout(resolve, 500))
+              }
+            }
+          }
+
+          // 所有尝试都失败
+          if (!transferSuccess) {
+            ElMessage.error(`转存失败 (已尝试${sortedResults.length}次): ${item.name} - ${lastError}`)
+            failCount++
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 1000))
+
+        } catch (error) {
+          console.error(`搜索引擎搜索失败 [${item.name}]:`, error)
+          ElMessage.error(`搜索失败: ${item.name}`)
+          failCount++
+          await new Promise(resolve => setTimeout(resolve, 1000))
+        }
+      }
+
+      // 等待1秒，避免请求过快
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+    } catch (error) {
+      console.error(`处理失败 [${item.name}]:`, error)
+      ElMessage.error(`处理失败: ${item.name}`)
+      failCount++
+    }
+  }
+
+  batchDownloading.value = false
+
+  // 显示汇总结果
+  ElMessageBox.alert(
+    `批量下载完成！\n\n成功: ${successCount} 个\n失败: ${failCount} 个\n跳过: ${skipCount} 个`,
+    '批量下载结果',
+    {
+      confirmButtonText: '确定',
+      type: successCount > 0 ? 'success' : 'info'
+    }
+  )
 }
 
 // 手动转存（从表格点击）
