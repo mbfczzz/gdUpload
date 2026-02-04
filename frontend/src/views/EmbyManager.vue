@@ -350,9 +350,13 @@ app:
                 <el-icon v-else-if="row.type === 'Audio'" color="#ff9500"><Headset /></el-icon>
                 <el-icon v-else color="#86868b"><Document /></el-icon>
                 <span>{{ row.name }}</span>
-                <el-tag v-if="transferStatusMap[row.id]" type="success" size="small" effect="dark" style="margin-left: 8px;">
+                <el-tag v-if="transferStatusMap[row.id] === 'success'" type="success" size="small" effect="dark" style="margin-left: 8px;">
                   <el-icon><Check /></el-icon>
                   已转存
+                </el-tag>
+                <el-tag v-else-if="transferStatusMap[row.id] === 'failed'" type="danger" size="small" effect="dark" style="margin-left: 8px;">
+                  <el-icon><Close /></el-icon>
+                  失败
                 </el-tag>
               </div>
             </template>
