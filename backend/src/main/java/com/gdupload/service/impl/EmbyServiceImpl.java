@@ -1347,6 +1347,7 @@ public class EmbyServiceImpl implements IEmbyService {
                     result.put("sizeMB", downloadedBytes / (1024 * 1024));
                     result.put("itemId", item.getId());
                     result.put("itemName", item.getName());
+                    result.put("downloadDir", downloadDir); // 添加下载目录信息
 
                     return result;
                 }
@@ -1749,18 +1750,18 @@ public class EmbyServiceImpl implements IEmbyService {
                 // 单个文件（电影或单集）
                 String filePath = (String) downloadResult.get("filePath");
                 String filename = (String) downloadResult.get("filename");
+                String downloadDir = (String) downloadResult.get("downloadDir");
 
                 if (filePath != null && filename != null) {
-                    // 获取文件所在目录
-                    java.nio.file.Path filePathObj = java.nio.file.Paths.get(filePath);
-                    java.nio.file.Path parentDir = filePathObj.getParent();
+                    // 更新实际文件路径和文件名
+                    fileInfo.setFilePath(filePath);
+                    fileInfo.setFileName(filename);
 
-                    // 如果文件在 /data/emby 的子目录中，提取相对路径
-                    if (parentDir != null && !parentDir.toString().equals("/data/emby")) {
-                        String parentDirStr = parentDir.toString();
+                    // 如果下载目录不是 /data/emby 根目录，提取相对路径
+                    if (downloadDir != null && !downloadDir.equals("/data/emby")) {
                         // 提取相对于 /data/emby 的路径
-                        if (parentDirStr.startsWith("/data/emby/")) {
-                            String relativePath = parentDirStr.substring("/data/emby/".length());
+                        if (downloadDir.startsWith("/data/emby/")) {
+                            String relativePath = downloadDir.substring("/data/emby/".length());
                             fileInfo.setRelativePath(relativePath);
                             log.info("更新单文件FileInfo: filePath={}, relativePath={}", filePath, relativePath);
                         } else {
@@ -1769,12 +1770,10 @@ public class EmbyServiceImpl implements IEmbyService {
                             log.info("更新单文件FileInfo: filePath={}, relativePath=空（根目录）", filePath);
                         }
                     } else {
+                        // 文件直接在 /data/emby 根目录
                         fileInfo.setRelativePath("");
+                        log.info("更新单文件FileInfo: filePath={}, relativePath=空（根目录）", filePath);
                     }
-
-                    // 更新实际文件路径和文件名
-                    fileInfo.setFilePath(filePath);
-                    fileInfo.setFileName(filename);
                 }
             }
 
