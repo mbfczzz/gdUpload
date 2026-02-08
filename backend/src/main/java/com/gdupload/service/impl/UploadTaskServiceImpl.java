@@ -276,4 +276,37 @@ public class UploadTaskServiceImpl extends ServiceImpl<UploadTaskMapper, UploadT
 
         return count;
     }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long createDownloadTask(String taskName, String targetPath, int totalCount) {
+        UploadTask task = new UploadTask();
+        task.setTaskName(taskName);
+        task.setTaskType(3); // Emby下载
+        task.setSourcePath("Emby Server");
+        task.setTargetPath(targetPath);
+        task.setTotalCount(totalCount);
+        task.setUploadedCount(0);
+        task.setFailedCount(0);
+        task.setTotalSize(0L);
+        task.setUploadedSize(0L);
+        task.setProgress(0);
+        task.setStatus(1); // 直接设为运行中
+        task.setStartTime(DateTimeUtil.now());
+        task.setCreateTime(DateTimeUtil.now());
+
+        boolean saved = this.save(task);
+
+        if (saved) {
+            log.info("创建Emby下载任务成功: taskId={}, taskName={}, totalCount={}",
+                task.getId(), taskName, totalCount);
+
+            systemLogService.logTaskOperation(task.getId(), taskName, "TASK_CREATE",
+                String.format("创建Emby下载任务 - 目标路径: %s, 媒体项数: %d", targetPath, totalCount));
+
+            return task.getId();
+        }
+
+        return null;
+    }
 }

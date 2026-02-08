@@ -44,11 +44,18 @@ export function getLibraryItems(libraryId, params) {
 /**
  * 获取指定媒体库的媒体项（分页）
  */
-export function getLibraryItemsPaged(libraryId, startIndex = 0, limit = 50) {
+export function getLibraryItemsPaged(libraryId, startIndex = 0, limit = 50, transferStatus = null, downloadStatus = null) {
+  const params = { startIndex, limit }
+  if (transferStatus) {
+    params.transferStatus = transferStatus
+  }
+  if (downloadStatus) {
+    params.downloadStatus = downloadStatus
+  }
   return request({
     url: `/emby/libraries/${libraryId}/items/paged`,
     method: 'get',
-    params: { startIndex, limit }
+    params
   })
 }
 
@@ -139,6 +146,47 @@ export function clearCache() {
 export function getCacheStatus() {
   return request({
     url: '/emby/cache/status',
+    method: 'get'
+  })
+}
+
+/**
+ * 获取媒体项的下载URL
+ */
+export function getDownloadUrls(itemId) {
+  return request({
+    url: `/emby/items/${itemId}/download-urls`,
+    method: 'get'
+  })
+}
+
+/**
+ * 下载媒体项到服务器
+ */
+export function downloadToServer(itemId) {
+  return request({
+    url: `/emby/items/${itemId}/download-to-server`,
+    method: 'post'
+  })
+}
+
+/**
+ * 批量下载媒体项到服务器（后端队列执行）
+ */
+export function batchDownloadToServer(itemIds) {
+  return request({
+    url: '/emby/batch-download-to-server',
+    method: 'post',
+    data: itemIds
+  })
+}
+
+/**
+ * 获取批量下载进度
+ */
+export function getBatchDownloadProgress() {
+  return request({
+    url: '/emby/batch-download-progress',
     method: 'get'
   })
 }

@@ -134,7 +134,7 @@ const taskForm = reactive({
   taskName: '',
   sourcePath: '',
   targetPath: '',
-  recursive: false
+  recursive: true  // 默认开启递归扫描
 })
 
 // 计算总大小

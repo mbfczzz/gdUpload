@@ -50,6 +50,12 @@
       >
         <el-table-column type="selection" width="55" />
         <el-table-column prop="taskName" label="任务名称" min-width="150" />
+        <el-table-column label="类型" width="110">
+          <template #default="{ row }">
+            <el-tag v-if="row.taskType === 3" type="warning" size="small">Emby下载</el-tag>
+            <el-tag v-else type="primary" size="small">上传</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="sourcePath" label="源路径" min-width="200" show-overflow-tooltip />
         <el-table-column prop="targetPath" label="目标路径" min-width="200" show-overflow-tooltip />
         <el-table-column label="进度" width="200">
@@ -60,7 +66,7 @@
         <el-table-column label="文件数" width="180">
           <template #default="{ row }">
             <div>
-              <span style="color: #67c23a;">成功: {{ row.uploadedCount }}</span>
+              <span style="color: #67c23a;">{{ row.taskType === 3 ? '已下载' : '成功' }}: {{ row.uploadedCount }}</span>
               <span v-if="row.failedCount > 0" style="color: #f56c6c; margin-left: 8px;">失败: {{ row.failedCount }}</span>
               <span style="color: #909399; margin-left: 8px;">/ {{ row.totalCount }}</span>
             </div>
@@ -68,13 +74,14 @@
         </el-table-column>
         <el-table-column label="大小" width="150">
           <template #default="{ row }">
-            {{ formatSize(row.uploadedSize) }} / {{ formatSize(row.totalSize) }}
+            <span v-if="row.taskType !== 3">{{ formatSize(row.uploadedSize) }} / {{ formatSize(row.totalSize) }}</span>
+            <span v-else style="color: #909399;">-</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
             <el-tag :type="getStatusType(row.status)">
-              {{ getStatusText(row.status) }}
+              {{ getStatusText(row.status, row.taskType) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -83,7 +90,7 @@
           <template #default="{ row }">
             <div class="action-buttons">
               <el-button
-                v-if="row.status === 0 || row.status === 3"
+                v-if="(row.status === 0 || row.status === 3) && row.taskType !== 3"
                 type="primary"
                 size="small"
                 @click="handleStart(row.id)"
@@ -101,7 +108,7 @@
                 暂停
               </el-button>
               <el-button
-                v-if="row.status === 5 || (row.status === 2 && row.failedCount > 0)"
+                v-if="(row.status === 5 || (row.status === 2 && row.failedCount > 0)) && row.taskType !== 3"
                 type="success"
                 size="small"
                 @click="handleRetry(row.id)"
@@ -153,13 +160,13 @@
     <!-- 文件列表对话框 -->
     <el-dialog
       v-model="fileDialogVisible"
-      title="任务文件列表"
+      :title="currentTaskType === 3 ? '下载文件列表' : '任务文件列表'"
       width="80%"
       :close-on-click-modal="false"
     >
       <el-table :data="fileList" style="width: 100%" max-height="500">
         <el-table-column prop="fileName" label="文件名" min-width="200" show-overflow-tooltip />
-        <el-table-column prop="filePath" label="文件路径" min-width="250" show-overflow-tooltip />
+        <el-table-column v-if="currentTaskType !== 3" prop="filePath" label="文件路径" min-width="250" show-overflow-tooltip />
         <el-table-column label="文件大小" width="120">
           <template #default="{ row }">
             {{ formatSize(row.fileSize) }}
@@ -172,7 +179,7 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="uploadEndTime" label="上传时间" width="180" />
+        <el-table-column prop="uploadEndTime" :label="currentTaskType === 3 ? '完成时间' : '上传时间'" width="180" />
         <el-table-column prop="errorMessage" label="错误信息" min-width="150" show-overflow-tooltip />
       </el-table>
     </el-dialog>
@@ -200,6 +207,7 @@ const tableData = ref([])
 const selectedIds = ref([])
 const fileDialogVisible = ref(false)
 const fileList = ref([])
+const currentTaskType = ref(null) // 当前查看文件的任务类型
 const taskSubscriptions = ref([])
 
 const searchForm = reactive({
@@ -251,39 +259,43 @@ const subscribeTask = (taskId) => {
 
 // 处理任务更新
 const handleTaskUpdate = (message) => {
-  const { taskId, type, data } = message
+  const { taskId, type } = message
 
   // 查找对应的任务
   const taskIndex = tableData.value.findIndex(task => task.id === taskId)
   if (taskIndex === -1) {
+    // 可能是新创建的任务，刷新列表
+    if (type === 'TASK_STATUS' || type === 'TASK_PROGRESS') {
+      getTaskList()
+    }
     return
   }
 
   const task = tableData.value[taskIndex]
 
   // 根据消息类型更新任务数据
-  if (type === 'PROGRESS') {
+  if (type === 'TASK_PROGRESS') {
     // 进度更新
-    task.progress = data.progress || 0
-    task.uploadedCount = data.uploadedCount || 0
-    task.totalCount = data.totalCount || 0
-    task.uploadedSize = data.uploadedSize || 0
-    task.totalSize = data.totalSize || 0
-    task.currentFileName = data.currentFileName || ''
-  } else if (type === 'STATUS') {
+    task.progress = message.progress || 0
+    task.uploadedCount = message.uploadedCount || 0
+    task.totalCount = message.totalCount || 0
+    task.uploadedSize = message.uploadedSize || 0
+    task.totalSize = message.totalSize || 0
+    task.currentFileName = message.currentFileName || ''
+  } else if (type === 'TASK_STATUS') {
     // 状态更新
-    task.status = data.status
-    if (data.message) {
-      ElMessage.info(data.message)
+    task.status = message.status
+    if (message.message) {
+      ElMessage.info(message.message)
     }
   } else if (type === 'FILE_STATUS') {
     // 文件状态更新（如果文件列表对话框打开，更新文件列表）
     if (fileDialogVisible.value && fileList.value.length > 0) {
-      const fileIndex = fileList.value.findIndex(f => f.id === data.fileId)
+      const fileIndex = fileList.value.findIndex(f => f.id === message.fileId)
       if (fileIndex !== -1) {
-        fileList.value[fileIndex].status = data.status
-        if (data.message) {
-          fileList.value[fileIndex].errorMessage = data.message
+        fileList.value[fileIndex].status = message.status
+        if (message.message) {
+          fileList.value[fileIndex].errorMessage = message.message
         }
       }
     }
@@ -423,6 +435,7 @@ const handleRetry = async (id) => {
 // 查看文件列表
 const handleViewFiles = async (row) => {
   try {
+    currentTaskType.value = row.taskType
     const { data } = await axios.get(`/api/task/${row.id}/files`)
     if (data.code === 200) {
       fileList.value = data.data
@@ -514,7 +527,18 @@ const getStatusType = (status) => {
 }
 
 // 获取状态文本
-const getStatusText = (status) => {
+const getStatusText = (status, taskType) => {
+  if (taskType === 3) {
+    const texts = {
+      0: '待下载',
+      1: '下载中',
+      2: '已完成',
+      3: '已暂停',
+      4: '已取消',
+      5: '失败'
+    }
+    return texts[status] || '未知'
+  }
   const texts = {
     0: '待开始',
     1: '上传中',
@@ -539,13 +563,24 @@ const getFileStatusType = (status) => {
     0: 'info',
     1: 'primary',
     2: 'success',
-    3: 'danger'
+    3: 'danger',
+    4: 'warning'
   }
   return types[status] || 'info'
 }
 
 // 获取文件状态文本
 const getFileStatusText = (status) => {
+  if (currentTaskType.value === 3) {
+    const texts = {
+      0: '待下载',
+      1: '下载中',
+      2: '已下载',
+      3: '失败',
+      4: '跳过'
+    }
+    return texts[status] || '未知'
+  }
   const texts = {
     0: '待上传',
     1: '上传中',

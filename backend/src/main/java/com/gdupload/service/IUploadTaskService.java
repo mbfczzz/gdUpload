@@ -73,4 +73,14 @@ public interface IUploadTaskService extends IService<UploadTask> {
      * 清理过期任务
      */
     long cleanExpiredTasks(Integer days);
+
+    /**
+     * 创建Emby下载任务
+     *
+     * @param taskName 任务名称
+     * @param targetPath 下载目标路径
+     * @param totalCount 总文件数
+     * @return 任务ID
+     */
+    Long createDownloadTask(String taskName, String targetPath, int totalCount);
 }

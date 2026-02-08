@@ -5,6 +5,7 @@ import com.gdupload.entity.FileInfo;
 import com.gdupload.service.IFileInfoService;
 import com.gdupload.util.DateTimeUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -16,6 +17,7 @@ import java.util.Map;
  * @author GD Upload Manager
  * @since 2026-01-18
  */
+@Slf4j
 @RestController
 @RequestMapping("/file")
 @RequiredArgsConstructor
@@ -28,6 +30,14 @@ public class FileController {
         String directoryPath = (String) params.get("directoryPath");
         Boolean recursive = (Boolean) params.getOrDefault("recursive", false);
         Integer limit = (Integer) params.getOrDefault("limit", 1000); // 默认最多返回1000个文件
+
+        // 添加详细日志
+        log.info("========== 收到扫描请求 ==========");
+        log.info("接收到的参数: {}", params);
+        log.info("directoryPath: {}", directoryPath);
+        log.info("recursive: {}", recursive);
+        log.info("limit: {}", limit);
+        log.info("====================================");
 
         List<FileInfo> allFiles = fileInfoService.scanDirectory(directoryPath, recursive);
 

@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -91,6 +92,8 @@ public class EmbyController {
      * @param libraryId 媒体库ID
      * @param startIndex 起始索引（可选，默认0）
      * @param limit 每页数量（可选，默认50）
+     * @param transferStatus 转存状态筛选（可选：success-成功, failed-失败, none-未转存）
+     * @param downloadStatus 下载状态筛选（可选：success-成功, failed-失败, none-未下载）
      * @param forceRefresh 已废弃，保留仅为兼容性
      */
     @GetMapping("/libraries/{libraryId}/items/paged")
@@ -98,8 +101,10 @@ public class EmbyController {
             @PathVariable String libraryId,
             @RequestParam(required = false, defaultValue = "0") Integer startIndex,
             @RequestParam(required = false, defaultValue = "50") Integer limit,
+            @RequestParam(required = false) String transferStatus,
+            @RequestParam(required = false) String downloadStatus,
             @RequestParam(required = false, defaultValue = "false") Boolean forceRefresh) {
-        Map<String, Object> result = cacheService.getLibraryItemsPaged(libraryId, startIndex, limit, forceRefresh);
+        Map<String, Object> result = cacheService.getLibraryItemsPaged(libraryId, startIndex, limit, transferStatus, downloadStatus, forceRefresh);
 
         @SuppressWarnings("unchecked")
         List<EmbyItem> items = (List<EmbyItem>) result.get("items");
@@ -237,5 +242,105 @@ public class EmbyController {
         Map<String, Object> status = new java.util.HashMap<>();
         status.put("hasCache", cacheService.hasCacheData());
         return Result.success(status);
+    }
+
+    /**
+     * 获取Emby媒体项的下载URL
+     * 注意：此功能仅用于测试，需要Emby服务器开启下载权限
+     *
+     * @param itemId 媒体项ID
+     * @return 下载URL信息
+     */
+    @GetMapping("/items/{itemId}/download-urls")
+    public Result<Map<String, String>> getDownloadUrls(@PathVariable String itemId) {
+        log.info("获取媒体项下载URL: itemId={}", itemId);
+        Map<String, String> urls = embyService.getDownloadUrls(itemId);
+        return Result.success(urls);
+    }
+
+    /**
+     * 代理下载Emby媒体项（模拟播放器请求）
+     * 通过后端代理请求视频流，绕过直接下载限制
+     *
+     * @param itemId 媒体项ID
+     * @param response HTTP响应
+     */
+    @GetMapping("/items/{itemId}/proxy-download")
+    public void proxyDownload(
+            @PathVariable String itemId,
+            @RequestParam(required = false, defaultValue = "video.mp4") String filename,
+            javax.servlet.http.HttpServletResponse response) {
+        log.info("代理下载媒体项: itemId={}, filename={}", itemId, filename);
+        try {
+            embyService.proxyDownload(itemId, filename, response);
+        } catch (Exception e) {
+            log.error("代理下载失败", e);
+            response.setStatus(500);
+        }
+    }
+
+    /**
+     * 下载Emby媒体项到服务器本地
+     * 下载到 /data/emby 目录
+     *
+     * @param itemId 媒体项ID
+     * @return 下载结果
+     */
+    @PostMapping("/items/{itemId}/download-to-server")
+    public Result<Map<String, Object>> downloadToServer(@PathVariable String itemId) {
+        log.info("下载媒体项到服务器: itemId={}", itemId);
+        try {
+            // 启动异步下载任务
+            embyService.downloadToServerAsync(itemId);
+
+            // 立即返回，告诉前端已开始下载
+            Map<String, Object> result = new HashMap<>();
+            result.put("status", "started");
+            result.put("message", "下载任务已启动，请查看后端日志了解进度");
+            result.put("itemId", itemId);
+
+            return Result.success(result);
+        } catch (Exception e) {
+            log.error("启动下载任务失败", e);
+            return Result.error("启动下载失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 批量下载Emby媒体项到服务器本地（后端队列执行）
+     * 所有下载任务在后端依次执行，不依赖前端保持连接
+     *
+     * @param itemIds 媒体项ID列表
+     * @return 批量下载任务启动结果
+     */
+    @PostMapping("/batch-download-to-server")
+    public Result<Map<String, Object>> batchDownloadToServer(@RequestBody List<String> itemIds) {
+        log.info("批量下载媒体项到服务器，共 {} 个", itemIds.size());
+        try {
+            // 启动后端批量下载任务，返回taskId
+            Long taskId = embyService.batchDownloadToServerAsync(itemIds);
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("status", "started");
+            result.put("message", "批量下载任务已启动，共 " + itemIds.size() + " 个媒体项");
+            result.put("totalCount", itemIds.size());
+            result.put("taskId", taskId);
+
+            return Result.success(result);
+        } catch (Exception e) {
+            log.error("启动批量下载任务失败", e);
+            return Result.error("启动批量下载失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 获取批量下载进度
+     *
+     * @return 当前批量下载的进度信息
+     */
+    @GetMapping("/batch-download-progress")
+    public Result<Map<String, Object>> getBatchDownloadProgress() {
+        Map<String, Object> progress = embyService.getBatchDownloadProgress();
+        return Result.success(progress);
     }
 }

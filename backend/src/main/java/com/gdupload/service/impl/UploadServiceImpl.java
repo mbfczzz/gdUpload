@@ -425,30 +425,10 @@ public class UploadServiceImpl implements IUploadService {
             // 处理文件名中的特殊符号
             String originalFilePath = fileInfo.getFilePath();
             Path originalPath = Paths.get(originalFilePath);
-            String actualUploadPath = originalFilePath;
 
             // 检查文件名是否包含特殊字符（只检查文件名，不检查目录）
             String fileName = originalPath.getFileName().toString();
             String sanitizedFileName = sanitizeFileName(fileName);
-
-            // 如果文件名需要清理，创建临时符号链接
-            Path tempLinkPath = null;
-            if (!fileName.equals(sanitizedFileName)) {
-                try {
-                    // 在同一目录下创建临时文件名
-                    Path parent = originalPath.getParent();
-                    tempLinkPath = parent.resolve("temp_upload_" + System.currentTimeMillis() + "_" + sanitizedFileName);
-
-                    // 创建硬链接（不占用额外空间）
-                    Files.createLink(tempLinkPath, originalPath);
-                    actualUploadPath = tempLinkPath.toString();
-
-                    log.info("文件名包含特殊字符，创建临时链接: {} -> {}", originalFilePath, actualUploadPath);
-                } catch (IOException e) {
-                    log.warn("创建临时链接失败，尝试直接上传原文件: {}", e.getMessage());
-                    actualUploadPath = originalFilePath;
-                }
-            }
 
             // 更新文件状态为上传中
             fileInfoService.updateFileStatus(fileId, 1, null);
@@ -459,15 +439,6 @@ public class UploadServiceImpl implements IUploadService {
                 String errorMsg = "文件不存在: " + originalFilePath;
                 log.error(errorMsg);
                 fileInfoService.updateFileStatus(fileId, 3, errorMsg);
-
-                // 清理临时链接
-                if (tempLinkPath != null && Files.exists(tempLinkPath)) {
-                    try {
-                        Files.delete(tempLinkPath);
-                    } catch (IOException e) {
-                        log.warn("删除临时链接失败: {}", e.getMessage());
-                    }
-                }
                 return UploadResult.failure(errorMsg);
             }
 
@@ -476,45 +447,38 @@ public class UploadServiceImpl implements IUploadService {
                 String errorMsg = "路径不是文件: " + originalFilePath;
                 log.error(errorMsg);
                 fileInfoService.updateFileStatus(fileId, 3, errorMsg);
-
-                // 清理临时链接
-                if (tempLinkPath != null && Files.exists(tempLinkPath)) {
-                    try {
-                        Files.delete(tempLinkPath);
-                    } catch (IOException e) {
-                        log.warn("删除临时链接失败: {}", e.getMessage());
-                    }
-                }
                 return UploadResult.failure(errorMsg);
             }
 
-            // 构建目标路径（rclone copy 的目标应该是目录，不包含文件名）
+            // 构建目标路径（包含相对路径以保留目录结构）
             String remotePath = task.getTargetPath();
             if (!remotePath.endsWith("/")) {
                 remotePath += "/";
             }
 
+            // 如果文件有相对路径（包含源目录名+子目录），追加到目标路径中
+            if (fileInfo.getRelativePath() != null && !fileInfo.getRelativePath().isEmpty()) {
+                remotePath += fileInfo.getRelativePath() + "/";
+                log.info("文件包含相对路径，目标路径: {}", remotePath);
+            }
+
+            // 如果文件名需要清理，在目标路径中指定清理后的文件名
+            if (!fileName.equals(sanitizedFileName)) {
+                remotePath += sanitizedFileName;
+                log.info("文件名包含特殊字符，将使用清理后的文件名上传: {} -> {}", fileName, sanitizedFileName);
+            }
+
             log.info("准备上传文件: {} -> {}:{}, 文件大小: {}",
-                actualUploadPath, account.getRcloneConfigName(), remotePath,
+                originalFilePath, account.getRcloneConfigName(), remotePath,
                 formatSize(fileInfo.getFileSize()));
 
             // 使用rclone上传文件
             RcloneResult result = rcloneUtil.uploadFile(
-                actualUploadPath,                 // sourcePath (可能是临时链接)
+                originalFilePath,                 // sourcePath (原始文件路径)
                 account.getRcloneConfigName(),    // remoteName
-                remotePath,                       // targetPath (目录路径，rclone会自动保留源文件名)
+                remotePath,                       // targetPath (如果包含文件名，rclone会使用指定的文件名)
                 line -> log.debug("上传进度: {}", line)  // logConsumer
             );
-
-            // 清理临时链接
-            if (tempLinkPath != null && Files.exists(tempLinkPath)) {
-                try {
-                    Files.delete(tempLinkPath);
-                    log.info("已删除临时链接: {}", tempLinkPath);
-                } catch (IOException e) {
-                    log.warn("删除临时链接失败: {}", e.getMessage());
-                }
-            }
 
             // 检查是否配额超限
             if (result.isQuotaExceeded()) {
@@ -523,40 +487,35 @@ public class UploadServiceImpl implements IUploadService {
                     account.getId(), account.getAccountName(), account.getStatus());
                 log.error("错误信息: {}", result.getErrorMessage());
 
-                // 记录禁用时间并设置24小时后自动解封
+                // 记录禁用时间（移除自动解封时间）
                 LocalDateTime now = DateTimeUtil.now();
-                LocalDateTime resetTime = now.plusHours(24);
                 account.setDisabledTime(now);
-                account.setQuotaResetTime(resetTime);
+                account.setQuotaResetTime(null);  // 不再设置自动解封时间
 
                 // 禁用账号
                 Integer oldStatus = account.getStatus();
                 account.setStatus(0);
 
                 log.error("准备更新账号状态: {} -> 0 (禁用)", oldStatus);
-                log.error("禁用时间: {}, 预计解封时间: {}",
-                    now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
-                    resetTime.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+                log.error("禁用时间: {}",
+                    now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
                 boolean updateResult = gdAccountService.updateById(account);
                 log.error("账号状态更新结果: {}, 账号ID: {}", updateResult ? "成功" : "失败", account.getId());
 
                 // 验证更新是否成功
                 GdAccount updatedAccount = gdAccountService.getById(account.getId());
-                log.error("更新后账号状态: {}, 解封时间: {}",
-                    updatedAccount.getStatus(),
-                    updatedAccount.getQuotaResetTime() != null ?
-                        updatedAccount.getQuotaResetTime().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")) : "null");
+                log.error("更新后账号状态: {}",
+                    updatedAccount.getStatus());
                 log.error("========================================");
 
                 // 记录日志
                 systemLogService.logFileUpload(taskId, fileInfo.getId(), fileInfo.getFileName(),
                     fileInfo.getFileSize(), account.getId(), "FILE_UPLOAD_FAILED",
-                    String.format("账号配额超限 - 账号: %s 已自动禁用，第二天凌晨0点自动解封", account.getAccountName()),
+                    String.format("账号配额超限 - 账号: %s 已自动禁用，需手动启用", account.getAccountName()),
                     "User rate limit exceeded");
 
                 // 返回配额超限结果（不更新文件状态，由上层重试逻辑处理）
-                String errorMsg = String.format("账号配额超限（已超过750GB），账号已自动禁用，将在24小时后（%s）自动解封",
-                    resetTime.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")));
+                String errorMsg = "账号配额超限（已超过750GB），账号已自动禁用，需手动启用";
                 return UploadResult.quotaExceeded(errorMsg);
             }
 
@@ -567,40 +526,35 @@ public class UploadServiceImpl implements IUploadService {
                     account.getId(), account.getAccountName(), account.getStatus());
                 log.error("错误信息: {}", result.getErrorMessage());
 
-                // 记录禁用时间并设置24小时后自动解封
+                // 记录禁用时间（移除自动解封时间）
                 LocalDateTime now = DateTimeUtil.now();
-                LocalDateTime resetTime = now.plusHours(24);
                 account.setDisabledTime(now);
-                account.setQuotaResetTime(resetTime);
+                account.setQuotaResetTime(null);  // 不再设置自动解封时间
 
                 // 禁用账号
                 Integer oldStatus = account.getStatus();
                 account.setStatus(0);
 
                 log.error("准备更新账号状态: {} -> 0 (禁用)", oldStatus);
-                log.error("禁用时间: {}, 预计解封时间: {}",
-                    now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
-                    resetTime.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+                log.error("禁用时间: {}",
+                    now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
                 boolean updateResult = gdAccountService.updateById(account);
                 log.error("账号状态更新结果: {}, 账号ID: {}", updateResult ? "成功" : "失败", account.getId());
 
                 // 验证更新是否成功
                 GdAccount updatedAccount = gdAccountService.getById(account.getId());
-                log.error("更新后账号状态: {}, 解封时间: {}",
-                    updatedAccount.getStatus(),
-                    updatedAccount.getQuotaResetTime() != null ?
-                        updatedAccount.getQuotaResetTime().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")) : "null");
+                log.error("更新后账号状态: {}",
+                    updatedAccount.getStatus());
                 log.error("========================================");
 
                 // 记录日志
                 systemLogService.logFileUpload(taskId, fileInfo.getId(), fileInfo.getFileName(),
                     fileInfo.getFileSize(), account.getId(), "FILE_UPLOAD_FAILED",
-                    String.format("rclone超时（可能IP被封或网络问题） - 账号: %s 已自动禁用，24小时后自动解封", account.getAccountName()),
+                    String.format("rclone超时（可能IP被封或网络问题） - 账号: %s 已自动禁用，需手动启用", account.getAccountName()),
                     "Timeout");
 
                 // 返回超时结果（区别于配额超限，但同样触发账号切换）
-                String errorMsg = String.format("rclone执行超时（5分钟），可能IP被封或网络问题，账号已自动禁用，将在24小时后（%s）自动解封",
-                    resetTime.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")));
+                String errorMsg = "rclone执行超时（5分钟），可能IP被封或网络问题，账号已自动禁用，需手动启用";
                 return UploadResult.timeout(errorMsg);
             }
 
@@ -643,34 +597,30 @@ public class UploadServiceImpl implements IUploadService {
                     log.error("账号ID: {}, 账号名称: {}", account.getId(), account.getAccountName());
                     log.error("探测结果: {}", probeResult.getMessage());
 
-                    // 记录禁用时间并设置24小时后自动解封
+                    // 记录禁用时间（移除自动解封时间）
                     LocalDateTime now = DateTimeUtil.now();
-                    LocalDateTime resetTime = now.plusHours(24);
                     account.setDisabledTime(now);
-                    account.setQuotaResetTime(resetTime);
+                    account.setQuotaResetTime(null);  // 不再设置自动解封时间
 
                     // 禁用账号
                     account.setStatus(0);
 
                     log.error("准备更新账号状态: 1 -> 0 (禁用)");
-                    log.error("禁用时间: {}, 预计解封时间: {}",
-                        now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
-                        resetTime.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+                    log.error("禁用时间: {}",
+                        now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
                     boolean updateResult = gdAccountService.updateById(account);
                     log.error("账号状态更新结果: {}, 账号ID: {}", updateResult ? "成功" : "失败", account.getId());
 
                     // 验证更新是否成功
                     GdAccount updatedAccount = gdAccountService.getById(account.getId());
-                    log.error("更新后账号状态: {}, 解封时间: {}",
-                        updatedAccount.getStatus(),
-                        updatedAccount.getQuotaResetTime() != null ?
-                            updatedAccount.getQuotaResetTime().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")) : "null");
+                    log.error("更新后账号状态: {}",
+                        updatedAccount.getStatus());
                     log.error("========================================");
 
                     // 记录日志
                     systemLogService.logFileUpload(taskId, fileInfo.getId(), fileInfo.getFileName(),
                         fileInfo.getFileSize(), account.getId(), "ACCOUNT_QUOTA_EXCEEDED",
-                        String.format("探测检测到账号配额超限 - 账号: %s 已自动禁用，24小时后自动解封", account.getAccountName()),
+                        String.format("探测检测到账号配额超限 - 账号: %s 已自动禁用，需手动启用", account.getAccountName()),
                         probeResult.getMessage());
 
                     log.warn("账号 {} 在上传成功后探测到配额超限，已自动禁用", account.getAccountName());
@@ -679,20 +629,6 @@ public class UploadServiceImpl implements IUploadService {
                         accountId, probeResult.getMessage());
                 } else {
                     log.info("探测成功: 账号 {} 仍然可用", account.getAccountName());
-                }
-
-                // 如果使用了临时链接，原文件已被rclone move删除，需要手动删除
-                // 实际上rclone move会删除actualUploadPath（临时链接），原文件还在
-                // 所以需要手动删除原文件
-                if (tempLinkPath != null) {
-                    try {
-                        if (Files.exists(originalPath)) {
-                            Files.delete(originalPath);
-                            log.info("已删除原文件: {}", originalFilePath);
-                        }
-                    } catch (IOException e) {
-                        log.warn("删除原文件失败: {}", e.getMessage());
-                    }
                 }
 
                 return UploadResult.success();
@@ -737,7 +673,7 @@ public class UploadServiceImpl implements IUploadService {
     }
 
     /**
-     * 清理单个文件名或目录名中的特殊符号
+     * 清理单个文件名或目录名中的特殊符号（直接删除特殊字符）
      */
     private String sanitizeFileName(String name) {
         if (name == null || name.isEmpty()) {
@@ -757,12 +693,11 @@ public class UploadServiceImpl implements IUploadService {
             extension = "";
         }
 
-        // 替换特殊符号为下划线
-        // 移除: # % & { } \ < > * ? / $ ! ' " : @ + ` | = [ ]
+        // 直接删除特殊符号（不替换为下划线）
+        // 删除: # % & { } \ < > * ? / $ ! ' " : @ + ` | = [ ] 和其他可能导致问题的字符
         nameWithoutExt = nameWithoutExt
-            .replaceAll("[#%&{}\\\\<>*?/$!'\":@+`|=\\[\\]]", "_")  // 替换特殊符号为下划线
-            .replaceAll("_+", "_")  // 多个连续下划线替换为单个
-            .replaceAll("^_|_$", "");  // 移除开头和结尾的下划线
+            .replaceAll("[#%&{}\\\\<>*?/$!'\":@+`|=\\[\\]]", "")  // 直接删除特殊符号
+            .trim();  // 移除首尾空格
 
         // 如果清理后文件名为空，使用默认名称
         if (nameWithoutExt.isEmpty()) {

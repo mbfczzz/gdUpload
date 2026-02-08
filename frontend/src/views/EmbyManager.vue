@@ -261,28 +261,49 @@ app:
               <el-option label="转存失败" value="failed" />
               <el-option label="未转存" value="none" />
             </el-select>
+            <el-select
+              v-model="downloadStatusFilter"
+              placeholder="下载状态"
+              style="width: 140px"
+              clearable
+              @change="applyDownloadFilter"
+            >
+              <el-option label="全部" value="" />
+              <el-option label="下载成功" value="success" />
+              <el-option label="下载失败" value="failed" />
+              <el-option label="未下载" value="none" />
+            </el-select>
           </div>
           <div style="display: flex; align-items: center; gap: 12px;">
             <el-button
               type="primary"
               @click="handleBatchDownload"
               :loading="batchDownloading"
-              :disabled="filteredLibraryItems.length === 0 || transferStatusFilter === 'success'"
+              :disabled="libraryItems.length === 0 || transferStatusFilter === 'success'"
             >
               <el-icon><Download /></el-icon>
-              批量下载当前页
+              批量搜索下载
             </el-button>
-            <span class="total-count">共 {{ totalCount }} 项 (显示 {{ filteredLibraryItems.length }} 项)</span>
+            <el-button
+              type="warning"
+              @click="handleBatchDirectDownload"
+              :loading="batchDirectDownloading"
+              :disabled="libraryItems.length === 0"
+            >
+              <el-icon><Download /></el-icon>
+              批量直接下载
+            </el-button>
+            <span class="total-count">共 {{ totalCount }} 项 (当前页 {{ libraryItems.length }} 项)</span>
           </div>
         </div>
 
-        <el-empty v-if="!loadingItems && filteredLibraryItems.length === 0" description="暂无媒体项数据">
+        <el-empty v-if="!loadingItems && libraryItems.length === 0" description="暂无媒体项数据">
           <el-button type="primary" @click="loadLibraryItems">刷新数据</el-button>
         </el-empty>
 
         <el-table
           v-else
-          :data="filteredLibraryItems"
+          :data="libraryItems"
           v-loading="loadingItems"
           border
           stripe
@@ -309,6 +330,14 @@ app:
                         <div class="episode-name">
                           <el-icon color="#007aff"><VideoPlay /></el-icon>
                           <span>{{ episode.name }}</span>
+                          <el-tag v-if="downloadStatusMap[episode.id] === 'success'" type="success" size="small" effect="plain" style="margin-left: 8px;">
+                            <el-icon><Download /></el-icon>
+                            已下载
+                          </el-tag>
+                          <el-tag v-else-if="downloadStatusMap[episode.id] === 'failed'" type="danger" size="small" effect="plain" style="margin-left: 8px;">
+                            <el-icon><Close /></el-icon>
+                            下载失败
+                          </el-tag>
                         </div>
                       </template>
                     </el-table-column>
@@ -334,6 +363,19 @@ app:
                         <span v-else class="text-muted">暂无简介</span>
                       </template>
                     </el-table-column>
+                    <el-table-column label="操作" width="120" align="center">
+                      <template #default="{ row: episode }">
+                        <el-button
+                          type="warning"
+                          link
+                          size="small"
+                          @click="handleDirectDownload(episode)"
+                        >
+                          <el-icon><Download /></el-icon>
+                          下载
+                        </el-button>
+                      </template>
+                    </el-table-column>
                   </el-table>
                 </div>
                 <el-empty v-else description="暂无剧集数据" :image-size="60" />
@@ -357,6 +399,14 @@ app:
                 <el-tag v-else-if="transferStatusMap[row.id] === 'failed'" type="danger" size="small" effect="dark" style="margin-left: 8px;">
                   <el-icon><Close /></el-icon>
                   失败
+                </el-tag>
+                <el-tag v-if="downloadStatusMap[row.id] === 'success'" type="success" size="small" effect="plain" style="margin-left: 8px;">
+                  <el-icon><Download /></el-icon>
+                  已下载
+                </el-tag>
+                <el-tag v-else-if="downloadStatusMap[row.id] === 'failed'" type="danger" size="small" effect="plain" style="margin-left: 8px;">
+                  <el-icon><Close /></el-icon>
+                  下载失败
                 </el-tag>
               </div>
             </template>
@@ -426,7 +476,20 @@ app:
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="280" fixed="right">
+          <el-table-column label="下载状态" width="100" align="center">
+            <template #default="{ row }">
+              <el-tag v-if="downloadStatusMap[row.id] === 'success'" type="success" size="small">
+                已下载
+              </el-tag>
+              <el-tag v-else-if="downloadStatusMap[row.id] === 'failed'" type="danger" size="small">
+                下载失败
+              </el-tag>
+              <el-tag v-else type="info" size="small">
+                未下载
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="350" fixed="right">
             <template #default="{ row }">
               <el-button type="primary" link size="small" @click="viewItemDetail(row)">
                 <el-icon><View /></el-icon>
@@ -441,6 +504,26 @@ app:
               >
                 <el-icon><Download /></el-icon>
                 搜索下载
+              </el-button>
+              <el-button
+                v-if="row.type === 'Movie' || row.type === 'Series'"
+                type="warning"
+                link
+                size="small"
+                @click="handleDirectDownload(row)"
+              >
+                <el-icon><Download /></el-icon>
+                直接下载
+              </el-button>
+              <el-button
+                v-if="downloadStatusMap[row.id] !== 'success'"
+                type="success"
+                link
+                size="small"
+                @click="handleMarkDownloadSuccess(row)"
+              >
+                <el-icon><Check /></el-icon>
+                标记已下载
               </el-button>
               <el-button
                 v-if="(row.type === 'Movie' || row.type === 'Series') && transferStatusMap[row.id] && transferStatusMap[row.id] !== 'none'"
@@ -877,6 +960,7 @@ app:
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Check } from '@element-plus/icons-vue'
 import {
   testEmbyConnection,
   getEmbyServerInfo,
@@ -889,12 +973,16 @@ import {
   getAllStudios,
   searchItems,
   syncAllLibraries,
-  getCacheStatus
+  getCacheStatus,
+  getDownloadUrls,
+  downloadToServer,
+  batchDownloadToServer
 } from '@/api/emby'
 import { searchSubscribe, searchByKeyword, transferToAlipan, batchValidateLinks, aiSelectBestResource } from '@/api/subscribe'
 import { createBatchTask, startTask } from '@/api/subscribeBatch'
 import { getFullConfig } from '@/api/smartSearchConfig'
 import { saveTransferHistory, batchCheckTransferStatus, getHistoryByEmbyItemId } from '@/api/transferHistory'
+import { batchCheckDownloadStatus, markDownloadStatus } from '@/api/downloadHistory'
 import { smartSearch115, transfer115 } from '@/api/resource115'
 
 // 状态
@@ -907,6 +995,7 @@ const loadingGenres = ref(false)
 const loadingTags = ref(false)
 const loadingStudios = ref(false)
 const batchDownloading = ref(false) // 批量下载状态
+const batchDirectDownloading = ref(false) // 批量直接下载状态
 
 // 数据
 const serverInfo = ref(null)
@@ -920,6 +1009,7 @@ const currentLibrary = ref(null)
 const currentItem = ref(null)
 const searchKeyword = ref('')
 const transferStatusFilter = ref('') // 转存状态筛选
+const downloadStatusFilter = ref('') // 下载状态筛选
 
 // 剧集展开相关
 const expandedRows = ref([])
@@ -932,24 +1022,7 @@ const pageSize = ref(50)
 const totalCount = ref(0)
 
 // 计算属性：过滤后的媒体项列表
-const filteredLibraryItems = computed(() => {
-  if (!transferStatusFilter.value) {
-    return libraryItems.value
-  }
-
-  if (transferStatusFilter.value === 'success') {
-    // 转存成功
-    return libraryItems.value.filter(item => transferStatusMap.value[item.id] === 'success')
-  } else if (transferStatusFilter.value === 'failed') {
-    // 转存失败
-    return libraryItems.value.filter(item => transferStatusMap.value[item.id] === 'failed')
-  } else if (transferStatusFilter.value === 'none') {
-    // 未转存
-    return libraryItems.value.filter(item => !transferStatusMap.value[item.id] || transferStatusMap.value[item.id] === 'none')
-  }
-
-  return libraryItems.value
-})
+// 已移除客户端过滤逻辑，现在由服务端处理
 
 // 对话框
 const itemsDialogVisible = ref(false)
@@ -974,6 +1047,7 @@ const aiSelecting = ref(false)
 const useAI = ref(true) // 是否使用AI筛选
 const validateLinks = ref(true) // 是否验证链接
 const transferStatusMap = ref({}) // 媒体项转存状态映射 {embyItemId: boolean}
+const downloadStatusMap = ref({}) // 媒体项下载状态映射 {embyItemId: status}
 
 // 根据cloudType获取云盘配置
 const getCloudConfigByType = (cloudType) => {
@@ -1165,8 +1239,20 @@ const handleExpandChange = async (row, expandedRowsData) => {
   const isExpanding = expandedRowsData.some(r => r.id === row.id)
 
   if (isExpanding) {
-    // 如果已经加载过剧集，不重复加载
+    // 如果已经加载过剧集，只刷新下载状态
     if (episodesMap.value[row.id]) {
+      const episodeIds = episodesMap.value[row.id].map(ep => ep.id)
+      if (episodeIds.length > 0) {
+        try {
+          const statusRes = await batchCheckDownloadStatus(episodeIds)
+          if (statusRes.data) {
+            Object.assign(downloadStatusMap.value, statusRes.data)
+            console.log(`刷新剧集下载状态完成，共 ${episodeIds.length} 集`)
+          }
+        } catch (error) {
+          console.error('刷新剧集下载状态失败:', error)
+        }
+      }
       return
     }
 
@@ -1176,6 +1262,21 @@ const handleExpandChange = async (row, expandedRowsData) => {
       const res = await getSeriesEpisodes(row.id)
       episodesMap.value[row.id] = res.data || []
       console.log(`加载电视剧 [${row.name}] 的剧集，共 ${res.data?.length || 0} 集`)
+
+      // 加载剧集的下载状态
+      if (res.data && res.data.length > 0) {
+        const episodeIds = res.data.map(ep => ep.id)
+        try {
+          const statusRes = await batchCheckDownloadStatus(episodeIds)
+          if (statusRes.data) {
+            // 合并到 downloadStatusMap
+            Object.assign(downloadStatusMap.value, statusRes.data)
+            console.log(`加载剧集下载状态完成，共 ${episodeIds.length} 集`)
+          }
+        } catch (error) {
+          console.error('加载剧集下载状态失败:', error)
+        }
+      }
     } catch (error) {
       console.error('加载剧集失败:', error)
       ElMessage.error('加载剧集失败')
@@ -1205,7 +1306,16 @@ const loadLibraryItems = async () => {
   loadingItems.value = true
   try {
     const startIndex = (currentPage.value - 1) * pageSize.value
-    const res = await getLibraryItemsPaged(currentLibrary.value.id, startIndex, pageSize.value)
+
+    // 传递转存状态和下载状态筛选参数到后端
+    const res = await getLibraryItemsPaged(
+      currentLibrary.value.id,
+      startIndex,
+      pageSize.value,
+      transferStatusFilter.value || null,
+      downloadStatusFilter.value || null
+    )
+
     libraryItems.value = res.data.items
     totalCount.value = res.data.totalCount
 
@@ -1220,6 +1330,8 @@ const loadLibraryItems = async () => {
 
     // 批量检查转存状态
     await loadTransferStatus()
+    // 批量检查下载状态
+    await loadDownloadStatus()
   } catch (error) {
     ElMessage.error('加载媒体项失败: ' + error.message)
   } finally {
@@ -1245,6 +1357,24 @@ const loadTransferStatus = async () => {
   }
 }
 
+// 加载媒体项的下载状态
+const loadDownloadStatus = async () => {
+  if (!libraryItems.value || libraryItems.value.length === 0) return
+
+  try {
+    const itemIds = libraryItems.value.map(item => item.id)
+    const res = await batchCheckDownloadStatus(itemIds)
+    if (res.data) {
+      downloadStatusMap.value = res.data
+      console.log('=== 下载状态加载完成 ===')
+      console.log('状态映射:', downloadStatusMap.value)
+      console.log('示例数据:', Object.entries(downloadStatusMap.value).slice(0, 5))
+    }
+  } catch (error) {
+    console.error('加载下载状态失败:', error)
+  }
+}
+
 // 分页改变
 const handlePageChange = (page) => {
   currentPage.value = page
@@ -1253,15 +1383,22 @@ const handlePageChange = (page) => {
 
 // 应用转存状态筛选
 const applyTransferFilter = () => {
-  // 筛选不需要重新加载数据，只需要触发计算属性更新
   console.log('=== 应用转存状态筛选 ===')
   console.log('筛选条件:', transferStatusFilter.value)
-  console.log('总媒体项数:', libraryItems.value.length)
-  console.log('筛选后数量:', filteredLibraryItems.value.length)
-  console.log('前5个筛选结果的状态:')
-  filteredLibraryItems.value.slice(0, 5).forEach(item => {
-    console.log(`  - ${item.name}: ${transferStatusMap.value[item.id]}`)
-  })
+
+  // 重置到第一页并重新加载数据
+  currentPage.value = 1
+  loadLibraryItems()
+}
+
+// 应用下载状态筛选
+const applyDownloadFilter = () => {
+  console.log('=== 应用下载状态筛选 ===')
+  console.log('筛选条件:', downloadStatusFilter.value)
+
+  // 重置到第一页并重新加载数据
+  currentPage.value = 1
+  loadLibraryItems()
 }
 
 // 每页数量改变
@@ -1546,6 +1683,110 @@ const handleQuickDownload = async (item) => {
 
   // 自动搜索
   handleSearchByKeyword()
+}
+
+// 直接从Emby下载
+const handleDirectDownload = async (item) => {
+  try {
+    // 根据类型显示不同的确认信息
+    let confirmMessage = ''
+    if (item.type === 'Series') {
+      confirmMessage = `确定要下载电视剧 "${item.name}" 的所有剧集吗？\n\n文件将保存到服务器的 /data/emby/${item.name}/ 目录下。\n\n下载将在后台进行，请查看后端日志了解进度。`
+    } else if (item.type === 'Episode') {
+      confirmMessage = `确定要下载剧集 "${item.name}" 吗？\n\n文件将保存到服务器的 /data/emby 目录下。\n\n下载将在后台进行，请查看后端日志了解进度。`
+    } else {
+      confirmMessage = `确定要下载 "${item.name}" 到服务器吗？\n\n文件将保存到服务器的 /data/emby 目录下。\n\n下载将在后台进行，请查看后端日志了解进度。`
+    }
+
+    // 确认下载
+    await ElMessageBox.confirm(
+      confirmMessage,
+      '确认下载',
+      {
+        confirmButtonText: '确定下载',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    try {
+      const res = await downloadToServer(item.id)
+
+      if (res.data && res.data.status === 'started') {
+        ElMessage.success({
+          message: '下载任务已启动！下载完成后将自动刷新状态。',
+          duration: 5000
+        })
+
+        // 启动定时器，每10秒刷新一次下载状态，持续5分钟
+        let refreshCount = 0
+        const maxRefreshCount = 30 // 5分钟 = 30次 * 10秒
+        const refreshInterval = setInterval(async () => {
+          refreshCount++
+
+          // 刷新当前页面的下载状态
+          if (libraryItems.value && libraryItems.value.length > 0) {
+            const itemIds = libraryItems.value.map(i => i.id)
+            try {
+              const statusRes = await batchCheckDownloadStatus(itemIds)
+              if (statusRes.data) {
+                Object.assign(downloadStatusMap.value, statusRes.data)
+              }
+            } catch (error) {
+              console.error('刷新下载状态失败:', error)
+            }
+          }
+
+          // 如果达到最大刷新次数，停止定时器
+          if (refreshCount >= maxRefreshCount) {
+            clearInterval(refreshInterval)
+          }
+        }, 10000) // 每10秒刷新一次
+      } else {
+        ElMessage.error('启动下载失败')
+      }
+    } catch (error) {
+      console.error('启动下载失败:', error)
+      ElMessage.error('启动下载失败: ' + (error.message || '未知错误'))
+    }
+
+  } catch {
+    // 用户取消
+  }
+}
+
+// 手动标记下载成功
+const handleMarkDownloadSuccess = async (item) => {
+  try {
+    await ElMessageBox.confirm(
+      `确定要将 "${item.name}" 标记为已下载吗？`,
+      '确认标记',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+
+    try {
+      const res = await markDownloadStatus(item.id, 'success')
+
+      if (res.code === 200) {
+        ElMessage.success('标记成功')
+
+        // 更新本地状态
+        downloadStatusMap.value[item.id] = 'success'
+      } else {
+        ElMessage.error('标记失败: ' + (res.message || '未知错误'))
+      }
+    } catch (error) {
+      console.error('标记失败:', error)
+      ElMessage.error('标记失败: ' + (error.message || '未知错误'))
+    }
+
+  } catch {
+    // 用户取消
+  }
 }
 
 // 通过关键词搜索
@@ -2708,7 +2949,7 @@ const transfer115Resource = async (resource) => {
 // 批量下载当前页
 const handleBatchDownload = async () => {
   // 过滤出电影和剧集（使用过滤后的列表）
-  const downloadableItems = filteredLibraryItems.value.filter(
+  const downloadableItems = libraryItems.value.filter(
     item => item.type === 'Movie' || item.type === 'Series'
   )
 
@@ -3180,6 +3421,111 @@ const handleBatchDownload = async () => {
       type: successCount > 0 ? 'success' : 'info'
     }
   )
+}
+
+// 批量直接下载当前页
+const handleBatchDirectDownload = async () => {
+  // 过滤出电影和剧集
+  const downloadableItems = libraryItems.value.filter(
+    item => item.type === 'Movie' || item.type === 'Series'
+  )
+
+  if (downloadableItems.length === 0) {
+    ElMessage.warning('当前页没有可下载的媒体项（仅支持电影和剧集）')
+    return
+  }
+
+  // 过滤掉已下载的
+  const needDownloadItems = downloadableItems.filter(
+    item => downloadStatusMap.value[item.id] !== 'success'
+  )
+
+  if (needDownloadItems.length === 0) {
+    ElMessage.info('当前页所有媒体项都已下载')
+    return
+  }
+
+  // 确认操作
+  try {
+    await ElMessageBox.confirm(
+      `确定要批量直接下载 ${needDownloadItems.length} 个媒体项吗？\n\n` +
+      `（已跳过 ${downloadableItems.length - needDownloadItems.length} 个已下载项）\n\n` +
+      `下载任务将在后端执行，可在"任务管理"页面查看进度。`,
+      '批量直接下载确认',
+      {
+        confirmButtonText: '开始下载',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    return // 用户取消
+  }
+
+  batchDirectDownloading.value = true
+
+  try {
+    const itemIds = needDownloadItems.map(item => item.id)
+    const res = await batchDownloadToServer(itemIds)
+
+    if (res.data && res.data.status === 'started') {
+      const taskId = res.data.taskId
+      ElMessageBox.alert(
+        `批量下载任务已创建（任务ID: ${taskId}），共 ${itemIds.length} 个媒体项。\n\n请前往"任务管理"页面查看实时下载进度。`,
+        '下载任务已启动',
+        {
+          confirmButtonText: '知道了',
+          type: 'success'
+        }
+      )
+    } else {
+      ElMessage.error('启动批量下载失败')
+    }
+  } catch (error) {
+    console.error('批量下载失败:', error)
+    ElMessage.error('批量下载失败: ' + (error.message || '未知错误'))
+  } finally {
+    batchDirectDownloading.value = false
+  }
+}
+
+// 等待下载完成
+const waitForDownloadComplete = async (itemId, itemName, maxWaitTime = 600000) => {
+  // maxWaitTime: 最大等待时间，默认10分钟
+  const startTime = Date.now()
+  const checkInterval = 5000 // 每5秒检查一次
+
+  while (Date.now() - startTime < maxWaitTime) {
+    // 等待5秒
+    await new Promise(resolve => setTimeout(resolve, checkInterval))
+
+    // 检查下载状态
+    try {
+      const statusRes = await batchCheckDownloadStatus([itemId])
+      if (statusRes.data && statusRes.data[itemId]) {
+        const status = statusRes.data[itemId]
+
+        if (status === 'success') {
+          // 下载成功
+          return true
+        } else if (status === 'failed') {
+          // 下载失败
+          return false
+        }
+        // 如果是 'none' 或其他状态，继续等待
+      }
+
+      // 显示等待进度
+      const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000)
+      console.log(`等待下载完成: ${itemName} (已等待 ${elapsedSeconds} 秒)`)
+    } catch (error) {
+      console.error('检查下载状态失败:', error)
+    }
+  }
+
+  // 超时
+  console.warn(`下载超时: ${itemName} (等待了 ${maxWaitTime / 1000} 秒)`)
+  return false
 }
 
 // 手动转存（从表格点击）

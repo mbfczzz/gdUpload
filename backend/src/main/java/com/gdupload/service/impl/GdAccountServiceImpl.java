@@ -53,30 +53,15 @@ public class GdAccountServiceImpl extends ServiceImpl<GdAccountMapper, GdAccount
             account.setUsedQuota(usedQuota);
             account.setRemainingQuota(account.getDailyLimit() - usedQuota);
 
-            // 根据剩余配额自动更新状态
+            // 根据剩余配额自动更新状态（仅更新为已达上限，不自动启用）
             if (account.getStatus() == 1 && account.getRemainingQuota() <= 0) {
                 // 启用状态但配额用完 -> 已达上限
                 account.setStatus(2);
                 this.updateById(account);
                 log.info("账号配额用完，自动更新为已达上限: accountId={}, accountName={}",
                     account.getId(), account.getAccountName());
-            } else if (account.getStatus() == 2 && account.getRemainingQuota() > 0) {
-                // 已达上限但配额恢复 -> 启用
-                account.setStatus(1);
-                this.updateById(account);
-                log.info("账号配额恢复，自动更新为启用: accountId={}, accountName={}",
-                    account.getId(), account.getAccountName());
-            } else if (account.getStatus() == 0 && account.getRemainingQuota() > 0 && account.getQuotaResetTime() != null) {
-                // 禁用状态但配额已恢复且已到解封时间 -> 启用
-                LocalDateTime now = DateTimeUtil.now();
-                if (now.isAfter(account.getQuotaResetTime()) || now.isEqual(account.getQuotaResetTime())) {
-                    account.setStatus(1);
-                    account.setQuotaResetTime(null);
-                    this.updateById(account);
-                    log.info("账号已到解封时间且配额恢复，自动更新为启用: accountId={}, accountName={}",
-                        account.getId(), account.getAccountName());
-                }
             }
+            // 移除自动启用逻辑，账号状态只能手动启用
         });
 
         return result;
@@ -259,15 +244,13 @@ public class GdAccountServiceImpl extends ServiceImpl<GdAccountMapper, GdAccount
                 accountId, account.getAccountName());
         }
 
-        // 如果从启用(1)切换到禁用(0)，记录禁用时间并设置解封时间为24小时后
+        // 如果从启用(1)切换到禁用(0)，记录禁用时间（不再设置自动解封时间）
         if (currentStatus == 1 && status == 0) {
             LocalDateTime now = DateTimeUtil.now();
-            LocalDateTime resetTime = now.plusHours(24);
             account.setDisabledTime(now);
-            account.setQuotaResetTime(resetTime);
-            log.info("手动禁用账号，禁用时间: {}, 预计解封时间: {}, accountId={}, accountName={}",
+            account.setQuotaResetTime(null);  // 不再设置自动解封时间
+            log.info("手动禁用账号，禁用时间: {}, accountId={}, accountName={}",
                 now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")),
-                resetTime.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")),
                 accountId, account.getAccountName());
         }
 

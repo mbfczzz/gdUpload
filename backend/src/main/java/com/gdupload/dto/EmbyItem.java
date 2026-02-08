@@ -40,6 +40,26 @@ public class EmbyItem {
     private String parentId;
 
     /**
+     * 电视剧ID（仅Episode类型有效）
+     */
+    private String seriesId;
+
+    /**
+     * 电视剧名称（仅Episode类型有效）
+     */
+    private String seriesName;
+
+    /**
+     * 季数（仅Episode类型有效）
+     */
+    private Integer parentIndexNumber;
+
+    /**
+     * 集数（仅Episode类型有效）
+     */
+    private Integer indexNumber;
+
+    /**
      * 文件路径
      */
     private String path;

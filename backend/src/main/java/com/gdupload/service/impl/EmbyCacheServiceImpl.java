@@ -93,10 +93,10 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
     }
 
     @Override
-    public Map<String, Object> getLibraryItemsPaged(String libraryId, int startIndex, int limit, boolean forceRefresh) {
+    public Map<String, Object> getLibraryItemsPaged(String libraryId, int startIndex, int limit, String transferStatus, String downloadStatus, boolean forceRefresh) {
         Long configId = getCurrentEmbyConfigId();
         // 直接从数据库获取
-        log.info("从数据库获取媒体库 {} 的媒体项 (configId={})", libraryId, configId);
+        log.info("从数据库获取媒体库 {} 的媒体项 (configId={}, transferStatus={}, downloadStatus={})", libraryId, configId, transferStatus, downloadStatus);
 
         // 检查数据库是否有数据
         LambdaQueryWrapper<EmbyItemCache> countWrapper = new LambdaQueryWrapper<>();
@@ -110,23 +110,42 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
             throw new BusinessException("数据库中没有该媒体库的数据，请先点击\"同步所有数据\"按钮进行同步");
         }
 
-        // 分页查询数据库
-        Page<EmbyItemCache> page = new Page<>(startIndex / limit + 1, limit);
-        LambdaQueryWrapper<EmbyItemCache> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(EmbyItemCache::getEmbyConfigId, configId)
-                .eq(EmbyItemCache::getParentId, libraryId)
-                .ne(EmbyItemCache::getType, "Episode") // 排除Episode类型
-                .orderByDesc(EmbyItemCache::getUpdateTime);
+        // 根据转存状态和下载状态筛选
+        List<EmbyItem> items;
+        long totalCount;
 
-        Page<EmbyItemCache> cachePage = itemCacheMapper.selectPage(page, wrapper);
+        if ((transferStatus != null && !transferStatus.isEmpty()) || (downloadStatus != null && !downloadStatus.isEmpty())) {
+            // 需要根据状态筛选，使用自定义SQL
+            Map<String, Object> params = new HashMap<>();
+            params.put("configId", configId);
+            params.put("libraryId", libraryId);
+            params.put("transferStatus", transferStatus);
+            params.put("downloadStatus", downloadStatus);
+            params.put("offset", startIndex);
+            params.put("limit", limit);
 
-        List<EmbyItem> items = cachePage.getRecords().stream()
-                .map(this::convertToItem)
-                .collect(Collectors.toList());
+            items = itemCacheMapper.selectItemsByTransferStatus(params);
+            totalCount = itemCacheMapper.countItemsByTransferStatus(params);
+        } else {
+            // 不筛选状态，使用原来的逻辑
+            Page<EmbyItemCache> page = new Page<>(startIndex / limit + 1, limit);
+            LambdaQueryWrapper<EmbyItemCache> wrapper = new LambdaQueryWrapper<>();
+            wrapper.eq(EmbyItemCache::getEmbyConfigId, configId)
+                    .eq(EmbyItemCache::getParentId, libraryId)
+                    .ne(EmbyItemCache::getType, "Episode") // 排除Episode类型
+                    .orderByDesc(EmbyItemCache::getUpdateTime);
+
+            Page<EmbyItemCache> cachePage = itemCacheMapper.selectPage(page, wrapper);
+
+            items = cachePage.getRecords().stream()
+                    .map(this::convertToItem)
+                    .collect(Collectors.toList());
+            totalCount = cachePage.getTotal();
+        }
 
         Map<String, Object> result = new HashMap<>();
         result.put("items", items);
-        result.put("totalCount", cachePage.getTotal());
+        result.put("totalCount", totalCount);
         result.put("startIndex", startIndex);
 
         return result;

@@ -9,6 +9,7 @@ import com.gdupload.service.IFileInfoService;
 import com.gdupload.service.ISystemLogService;
 import com.gdupload.service.IUploadService;
 import com.gdupload.service.IUploadTaskService;
+import com.gdupload.service.IEmbyService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
@@ -30,6 +31,7 @@ public class UploadTaskController {
     private final IFileInfoService fileInfoService;
     private final IUploadService uploadService;
     private final ISystemLogService systemLogService;
+    private final IEmbyService embyService;
 
     @GetMapping("/page")
     public Result<PageResult<UploadTask>> page(
@@ -92,6 +94,11 @@ public class UploadTaskController {
 
     @PutMapping("/{id}/start")
     public Result<Void> start(@PathVariable Long id) {
+        UploadTask task = uploadTaskService.getTaskDetail(id);
+        if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
+            // Emby下载任务不支持从"启动"按钮重新启动
+            return Result.error("Emby下载任务不支持手动启动，请重新创建下载任务");
+        }
         boolean success = uploadTaskService.startTask(id);
 
         if (success) {
@@ -105,12 +112,23 @@ public class UploadTaskController {
 
     @PutMapping("/{id}/pause")
     public Result<Void> pause(@PathVariable Long id) {
+        UploadTask task = uploadTaskService.getTaskDetail(id);
+        if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
+            // Emby下载任务
+            boolean success = embyService.pauseDownloadTask(id);
+            return success ? Result.success("任务已暂停") : Result.error("暂停失败");
+        }
         uploadService.stopTask(id);
         return Result.success("任务已暂停");
     }
 
     @PutMapping("/{id}/resume")
     public Result<Void> resume(@PathVariable Long id) {
+        UploadTask task = uploadTaskService.getTaskDetail(id);
+        if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
+            // Emby下载任务不支持恢复（暂停后需要重新创建）
+            return Result.error("Emby下载任务暂停后不支持恢复，请重新创建下载任务");
+        }
         boolean success = uploadTaskService.resumeTask(id);
 
         if (success) {
@@ -123,6 +141,12 @@ public class UploadTaskController {
 
     @PutMapping("/{id}/cancel")
     public Result<Void> cancel(@PathVariable Long id) {
+        UploadTask task = uploadTaskService.getTaskDetail(id);
+        if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
+            // Emby下载任务
+            boolean success = embyService.cancelDownloadTask(id);
+            return success ? Result.success("任务已取消") : Result.error("取消失败");
+        }
         uploadService.stopTask(id);
         boolean success = uploadTaskService.cancelTask(id);
         return success ? Result.success("任务已取消") : Result.error("取消失败");
@@ -130,6 +154,10 @@ public class UploadTaskController {
 
     @PutMapping("/{id}/retry")
     public Result<Void> retry(@PathVariable Long id) {
+        UploadTask task = uploadTaskService.getTaskDetail(id);
+        if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
+            return Result.error("Emby下载任务不支持重试，请重新创建下载任务");
+        }
         boolean success = uploadTaskService.retryTask(id);
 
         if (success) {

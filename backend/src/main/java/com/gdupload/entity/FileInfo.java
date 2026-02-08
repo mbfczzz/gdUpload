@@ -40,6 +40,11 @@ public class FileInfo implements Serializable {
     private String fileName;
 
     /**
+     * 相对路径（相对于任务源路径）
+     */
+    private String relativePath;
+
+    /**
      * 文件大小(字节)
      */
     private Long fileSize;

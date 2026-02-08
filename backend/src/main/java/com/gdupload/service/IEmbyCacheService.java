@@ -23,13 +23,15 @@ public interface IEmbyCacheService {
     /**
      * 获取媒体库的媒体项（分页，从数据库）
      *
-     * @param libraryId    媒体库ID
-     * @param startIndex   起始索引
-     * @param limit        数量限制
-     * @param forceRefresh 已废弃，保留参数仅为兼容性
+     * @param libraryId      媒体库ID
+     * @param startIndex     起始索引
+     * @param limit          数量限制
+     * @param transferStatus 转存状态筛选（可选：success-成功, failed-失败, none-未转存）
+     * @param downloadStatus 下载状态筛选（可选：success-成功, failed-失败, none-未下载）
+     * @param forceRefresh   已废弃，保留参数仅为兼容性
      * @return 媒体项分页结果
      */
-    Map<String, Object> getLibraryItemsPaged(String libraryId, int startIndex, int limit, boolean forceRefresh);
+    Map<String, Object> getLibraryItemsPaged(String libraryId, int startIndex, int limit, String transferStatus, String downloadStatus, boolean forceRefresh);
 
     /**
      * 获取媒体项详情（从数据库）
