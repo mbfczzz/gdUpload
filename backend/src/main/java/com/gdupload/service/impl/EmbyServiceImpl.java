@@ -1595,6 +1595,8 @@ public class EmbyServiceImpl implements IEmbyService {
                                 log.info("[{}/{}] 下载成功: itemId={}", index + 1, itemIds.size(), itemId);
 
                                 // 更新FileInfo：设置实际下载的文件路径、文件名和相对路径
+                                log.info("准备更新FileInfo: fileInfoId={}, result包含的key={}",
+                                    currentFile.getId(), result.keySet());
                                 updateFileInfoAfterDownload(currentFile, result);
 
                                 fileInfoService.updateFileStatus(currentFile.getId(), 2, null);
