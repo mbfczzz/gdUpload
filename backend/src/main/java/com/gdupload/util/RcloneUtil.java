@@ -538,4 +538,26 @@ public class RcloneUtil {
             return message;
         }
     }
+
+    /**
+     * 重命名远程文件（使用 moveto 命令）
+     *
+     * @param remoteName rclone远程配置名称
+     * @param oldPath 原文件路径
+     * @param newPath 新文件路径
+     * @return 重命名结果
+     */
+    public RcloneResult renameFile(String remoteName, String oldPath, String newPath) {
+        List<String> command = new ArrayList<>();
+        command.add(rclonePath);
+        command.add("moveto");
+        command.add(remoteName + ":" + oldPath);
+        command.add(remoteName + ":" + newPath);
+        command.add("--config");
+        command.add(rcloneConfigPath);
+        command.add("-v");
+
+        log.info("执行rclone重命名: {} -> {}", oldPath, newPath);
+        return executeCommand(command, line -> log.debug("重命名输出: {}", line));
+    }
 }

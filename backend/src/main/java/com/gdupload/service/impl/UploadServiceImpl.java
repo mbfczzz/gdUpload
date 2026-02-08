@@ -456,11 +456,11 @@ public class UploadServiceImpl implements IUploadService {
                 remotePath += "/";
             }
 
-            // 如果文件有相对路径（包含源目录名+子目录），追加到目标路径中
+            // 如果文件有相对路径（包含源目录名+子目录），追加到目标路径中以保留目录结构
             String finalFileName = sanitizedFileName;
             if (fileInfo.getRelativePath() != null && !fileInfo.getRelativePath().isEmpty()) {
                 remotePath += fileInfo.getRelativePath() + "/";
-                log.info("文件包含相对路径，目标路径: {}", remotePath);
+                log.info("文件包含相对路径，保留目录结构: {}", remotePath);
 
                 // 从相对路径中提取最后一级目录名（剧集文件夹名），拼接到文件名前
                 // 例如：relativePath = "重庆遇见爱 (2024)"，fileName = "第1集.mp4"
@@ -476,7 +476,7 @@ public class UploadServiceImpl implements IUploadService {
                             String extension = sanitizedFileName.substring(lastDotIndex);
                             // 拼接：文件夹名-原文件名.扩展名
                             finalFileName = folderName + "-" + nameWithoutExt + extension;
-                            log.info("拼接文件夹名到文件名: {} -> {}", sanitizedFileName, finalFileName);
+                            log.info("计划重命名文件: {} -> {}", sanitizedFileName, finalFileName);
                         }
                     }
                 }
@@ -485,23 +485,31 @@ public class UploadServiceImpl implements IUploadService {
                     fileInfo.getId(), fileInfo.getFileName(), fileInfo.getFilePath());
             }
 
-            // 如果文件名需要清理或拼接了文件夹名，在目标路径中指定最终文件名
-            if (!fileName.equals(sanitizedFileName) || !finalFileName.equals(sanitizedFileName)) {
-                remotePath += finalFileName;
-                log.info("使用最终文件名上传: {}", finalFileName);
-            }
-
             log.info("准备上传文件: {} -> {}:{}, 文件大小: {}",
                 originalFilePath, account.getRcloneConfigName(), remotePath,
                 formatSize(fileInfo.getFileSize()));
 
-            // 使用rclone上传文件
+            // 使用rclone上传文件到目标目录
             RcloneResult result = rcloneUtil.uploadFile(
                 originalFilePath,                 // sourcePath (原始文件路径)
                 account.getRcloneConfigName(),    // remoteName
-                remotePath,                       // targetPath (如果包含文件名，rclone会使用指定的文件名)
+                remotePath,                       // targetPath (目录路径，以/结尾)
                 line -> log.debug("上传进度: {}", line)  // logConsumer
             );
+
+            // 如果上传成功且需要重命名
+            if (result.isSuccess() && !sanitizedFileName.equals(finalFileName)) {
+                log.info("上传成功，开始重命名文件: {} -> {}", sanitizedFileName, finalFileName);
+                RcloneResult renameResult = rcloneUtil.renameFile(
+                    account.getRcloneConfigName(),
+                    remotePath + sanitizedFileName,  // 原文件路径
+                    remotePath + finalFileName       // 新文件路径
+                );
+                if (!renameResult.isSuccess()) {
+                    log.error("文件重命名失败: {}", renameResult.getErrorMessage());
+                    // 重命名失败不影响上传结果，继续处理
+                }
+            }
 
             // 检查是否配额超限
             if (result.isQuotaExceeded()) {

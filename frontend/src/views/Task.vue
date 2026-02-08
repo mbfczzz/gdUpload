@@ -134,6 +134,14 @@
                 文件
               </el-button>
               <el-button
+                type="warning"
+                size="small"
+                @click="handleFixPath(row.id)"
+              >
+                <el-icon><Tools /></el-icon>
+                修复路径
+              </el-button>
+              <el-button
                 type="danger"
                 size="small"
                 @click="handleDelete(row.id)"
@@ -197,7 +205,8 @@ import {
   RefreshRight,
   Close,
   Document,
-  Delete
+  Delete,
+  Tools
 } from '@element-plus/icons-vue'
 import axios from 'axios'
 import websocketClient from '@/utils/websocket'
@@ -588,6 +597,22 @@ const getFileStatusText = (status) => {
     3: '失败'
   }
   return texts[status] || '未知'
+}
+
+// 修复路径
+const handleFixPath = async (id) => {
+  try {
+    const { data } = await axios.post(`/api/fix/emby-file-info?taskId=${id}`)
+    if (data.code === 200) {
+      const result = data.data
+      ElMessage.success(`修复完成！总数: ${result.totalCount}, 更新: ${result.updatedCount}, 跳过: ${result.skippedCount}, 错误: ${result.errorCount}`)
+      getTaskList()
+    } else {
+      ElMessage.error(data.message)
+    }
+  } catch (error) {
+    ElMessage.error('修复失败')
+  }
 }
 
 // 格式化文件大小
