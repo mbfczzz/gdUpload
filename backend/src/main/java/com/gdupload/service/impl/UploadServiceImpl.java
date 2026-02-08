@@ -480,6 +480,9 @@ public class UploadServiceImpl implements IUploadService {
                         }
                     }
                 }
+            } else {
+                log.warn("文件relativePath为空: fileId={}, fileName={}, filePath={}",
+                    fileInfo.getId(), fileInfo.getFileName(), fileInfo.getFilePath());
             }
 
             // 如果文件名需要清理或拼接了文件夹名，在目标路径中指定最终文件名

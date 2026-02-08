@@ -114,6 +114,9 @@ public class FileInfoServiceImpl extends ServiceImpl<FileInfoMapper, FileInfo> i
                         String parentPath = entry.getParent().toAbsolutePath().toString();
                         String relativePath = calculateRelativePath(basePath, parentPath);
 
+                        log.info("文件相对路径计算: fileName={}, parentPath={}, basePath={}, relativePath={}",
+                            fileName, parentPath, basePath, relativePath);
+
                         FileInfo fileInfo = new FileInfo();
                         fileInfo.setFileName(fileName);
                         fileInfo.setFilePath(entry.toAbsolutePath().toString());
