@@ -14,7 +14,13 @@
       "Bash(npm run build:*)",
       "Bash(mvn clean package:*)",
       "Bash(./mvnw clean package:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(javac:*)",
+      "Bash(ssh root@8.217.12.58 \"ls -la /backdata/done/ | head -20\")",
+      "Bash(ssh root@8.217.12.58 \"ls /backdata/done/外语电影/ | head -5\")",
+      "Bash(git status:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: Emby下载集成任务管理 + 3并发下载 + WebSocket实时进度\n\n- Emby批量下载接入任务管理模块\\(taskType=3\\)，复用UploadTask+FileInfo+WebSocket体系\n- 自动生成任务名称（从媒体项名称拼接）\n- 3个并发下载线程\\(ExecutorService\\)，随机1-3秒延迟防封\n- WebSocket实时推送下载进度和文件状态\n- 支持暂停/取消下载任务\\(AtomicBoolean stopFlag\\)\n- Task.vue适配：类型列、下载状态文本、操作按钮条件显示\n- 修复WebSocket消息格式不匹配bug\\(TASK_PROGRESS vs PROGRESS\\)\n- EmbyManager.vue简化：去掉轮询，返回taskId引导用户去任务管理页\n- 新增EmbyDownloadHistory表和115转存功能\n- 新增数据库迁移脚本\n\nCo-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }
