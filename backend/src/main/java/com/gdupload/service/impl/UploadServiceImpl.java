@@ -457,15 +457,35 @@ public class UploadServiceImpl implements IUploadService {
             }
 
             // 如果文件有相对路径（包含源目录名+子目录），追加到目标路径中
+            String finalFileName = sanitizedFileName;
             if (fileInfo.getRelativePath() != null && !fileInfo.getRelativePath().isEmpty()) {
                 remotePath += fileInfo.getRelativePath() + "/";
                 log.info("文件包含相对路径，目标路径: {}", remotePath);
+
+                // 从相对路径中提取最后一级目录名（剧集文件夹名），拼接到文件名前
+                // 例如：relativePath = "重庆遇见爱 (2024)"，fileName = "第1集.mp4"
+                // 结果：finalFileName = "重庆遇见爱 (2024)-第1集.mp4"
+                String[] pathParts = fileInfo.getRelativePath().split("[/\\\\]");
+                if (pathParts.length > 0) {
+                    String folderName = pathParts[pathParts.length - 1]; // 取最后一级目录名
+                    if (!folderName.isEmpty()) {
+                        // 提取文件名（不含扩展名）和扩展名
+                        int lastDotIndex = sanitizedFileName.lastIndexOf('.');
+                        if (lastDotIndex > 0) {
+                            String nameWithoutExt = sanitizedFileName.substring(0, lastDotIndex);
+                            String extension = sanitizedFileName.substring(lastDotIndex);
+                            // 拼接：文件夹名-原文件名.扩展名
+                            finalFileName = folderName + "-" + nameWithoutExt + extension;
+                            log.info("拼接文件夹名到文件名: {} -> {}", sanitizedFileName, finalFileName);
+                        }
+                    }
+                }
             }
 
-            // 如果文件名需要清理，在目标路径中指定清理后的文件名
-            if (!fileName.equals(sanitizedFileName)) {
-                remotePath += sanitizedFileName;
-                log.info("文件名包含特殊字符，将使用清理后的文件名上传: {} -> {}", fileName, sanitizedFileName);
+            // 如果文件名需要清理或拼接了文件夹名，在目标路径中指定最终文件名
+            if (!fileName.equals(sanitizedFileName) || !finalFileName.equals(sanitizedFileName)) {
+                remotePath += finalFileName;
+                log.info("使用最终文件名上传: {}", finalFileName);
             }
 
             log.info("准备上传文件: {} -> {}:{}, 文件大小: {}",

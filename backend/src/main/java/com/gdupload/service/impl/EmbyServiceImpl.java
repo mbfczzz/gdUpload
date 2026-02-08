@@ -1592,6 +1592,10 @@ public class EmbyServiceImpl implements IEmbyService {
                             if (downloadOk) {
                                 successCount.incrementAndGet();
                                 log.info("[{}/{}] 下载成功: itemId={}", index + 1, itemIds.size(), itemId);
+
+                                // 更新FileInfo：设置实际下载的文件路径、文件名和相对路径
+                                updateFileInfoAfterDownload(currentFile, result);
+
                                 fileInfoService.updateFileStatus(currentFile.getId(), 2, null);
                                 webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 2, null);
                             } else {
@@ -1718,5 +1722,66 @@ public class EmbyServiceImpl implements IEmbyService {
         }
         // 任务不在运行中，直接更新数据库状态
         return uploadTaskService.cancelTask(taskId);
+    }
+
+    /**
+     * 下载完成后更新FileInfo的实际文件路径和相对路径
+     */
+    private void updateFileInfoAfterDownload(FileInfo fileInfo, Map<String, Object> downloadResult) {
+        try {
+            if ("series".equals(downloadResult.get("type"))) {
+                // 电视剧：更新为剧集目录路径
+                String seriesDir = (String) downloadResult.get("seriesDir");
+                if (seriesDir != null) {
+                    // 提取剧集文件夹名（例如：/data/emby/重庆遇见爱 (2024) → 重庆遇见爱 (2024)）
+                    java.nio.file.Path seriesDirPath = java.nio.file.Paths.get(seriesDir);
+                    String seriesFolderName = seriesDirPath.getFileName().toString();
+
+                    // 设置相对路径为剧集文件夹名
+                    fileInfo.setRelativePath(seriesFolderName);
+
+                    // filePath设置为剧集目录（后续上传时会扫描这个目录下的所有文件）
+                    fileInfo.setFilePath(seriesDir);
+
+                    log.info("更新电视剧FileInfo: seriesDir={}, relativePath={}", seriesDir, seriesFolderName);
+                }
+            } else {
+                // 单个文件（电影或单集）
+                String filePath = (String) downloadResult.get("filePath");
+                String filename = (String) downloadResult.get("filename");
+
+                if (filePath != null && filename != null) {
+                    // 获取文件所在目录
+                    java.nio.file.Path filePathObj = java.nio.file.Paths.get(filePath);
+                    java.nio.file.Path parentDir = filePathObj.getParent();
+
+                    // 如果文件在 /data/emby 的子目录中，提取相对路径
+                    if (parentDir != null && !parentDir.toString().equals("/data/emby")) {
+                        String parentDirStr = parentDir.toString();
+                        // 提取相对于 /data/emby 的路径
+                        if (parentDirStr.startsWith("/data/emby/")) {
+                            String relativePath = parentDirStr.substring("/data/emby/".length());
+                            fileInfo.setRelativePath(relativePath);
+                            log.info("更新单文件FileInfo: filePath={}, relativePath={}", filePath, relativePath);
+                        } else {
+                            // 文件直接在 /data/emby 根目录
+                            fileInfo.setRelativePath("");
+                            log.info("更新单文件FileInfo: filePath={}, relativePath=空（根目录）", filePath);
+                        }
+                    } else {
+                        fileInfo.setRelativePath("");
+                    }
+
+                    // 更新实际文件路径和文件名
+                    fileInfo.setFilePath(filePath);
+                    fileInfo.setFileName(filename);
+                }
+            }
+
+            // 保存更新
+            fileInfoService.updateById(fileInfo);
+        } catch (Exception e) {
+            log.error("更新FileInfo失败: fileInfoId={}, error={}", fileInfo.getId(), e.getMessage(), e);
+        }
     }
 }
