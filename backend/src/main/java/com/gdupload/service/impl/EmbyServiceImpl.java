@@ -26,6 +26,7 @@ import com.gdupload.service.IWebSocketService;
 import com.gdupload.util.DateTimeUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
@@ -67,8 +68,30 @@ public class EmbyServiceImpl implements IEmbyService {
     @Autowired
     private IWebSocketService webSocketService;
 
+    @Autowired
+    private ISmartSearchConfigService smartSearchConfigService;
+
+    @Value("${app.emby.download-dir:/data/emby}")
+    private String defaultEmbyDownloadDir;
+
     // 下载任务的停止标志，key=taskId
     private final Map<Long, AtomicBoolean> downloadStopFlags = new ConcurrentHashMap<>();
+
+    /**
+     * 获取Emby下载目录（优先从数据库读取，否则使用默认值）
+     */
+    private String getEmbyDownloadDir() {
+        try {
+            Map<String, Object> config = smartSearchConfigService.getFullConfig("default");
+            String downloadDir = (String) config.get("embyDownloadDir");
+            if (downloadDir != null && !downloadDir.trim().isEmpty()) {
+                return downloadDir;
+            }
+        } catch (Exception e) {
+            log.warn("读取Emby下载目录配置失败，使用默认值: {}", e.getMessage());
+        }
+        return defaultEmbyDownloadDir;
+    }
 
     /**
      * 初始化方法，记录编码信息
@@ -1000,7 +1023,7 @@ public class EmbyServiceImpl implements IEmbyService {
         log.info("清理后的电视剧名称: {}", seriesName);
 
         // 使用 Path 创建目录，确保UTF-8编码
-        java.nio.file.Path seriesDirPath = java.nio.file.Paths.get("/data/emby", seriesName);
+        java.nio.file.Path seriesDirPath = java.nio.file.Paths.get(getEmbyDownloadDir(), seriesName);
         String seriesDir = seriesDirPath.toString();
         log.info("完整目录路径: {}", seriesDir);
 
@@ -1143,7 +1166,7 @@ public class EmbyServiceImpl implements IEmbyService {
      * 下载单个媒体项（Movie 或 Episode）
      */
     private Map<String, Object> downloadSingleItem(EmbyItem item) throws Exception {
-        return downloadSingleItem(item, "/data/emby");
+        return downloadSingleItem(item, getEmbyDownloadDir());
     }
 
     /**
@@ -1507,7 +1530,7 @@ public class EmbyServiceImpl implements IEmbyService {
             }
 
             // 2. 创建 UploadTask（taskType=3）
-            taskId = uploadTaskService.createDownloadTask(taskName, "/data/emby", itemIds.size());
+            taskId = uploadTaskService.createDownloadTask(taskName, getEmbyDownloadDir(), itemIds.size());
             if (taskId == null) {
                 throw new BusinessException("创建下载任务失败");
             }
@@ -1766,7 +1789,7 @@ public class EmbyServiceImpl implements IEmbyService {
                 // 电视剧：更新为剧集目录路径
                 String seriesDir = (String) downloadResult.get("seriesDir");
                 if (seriesDir != null) {
-                    // 提取剧集文件夹名（例如：/data/emby/重庆遇见爱 (2024) → 重庆遇见爱 (2024)）
+                    // 提取剧集文件夹名（例如：{embyDownloadDir}/重庆遇见爱 (2024) → 重庆遇见爱 (2024)）
                     java.nio.file.Path seriesDirPath = java.nio.file.Paths.get(seriesDir);
                     String seriesFolderName = seriesDirPath.getFileName().toString();
 
@@ -1789,20 +1812,22 @@ public class EmbyServiceImpl implements IEmbyService {
                     fileInfo.setFilePath(filePath);
                     fileInfo.setFileName(filename);
 
-                    // 如果下载目录不是 /data/emby 根目录，提取相对路径
-                    if (downloadDir != null && !downloadDir.equals("/data/emby")) {
-                        // 提取相对于 /data/emby 的路径
-                        if (downloadDir.startsWith("/data/emby/")) {
-                            String relativePath = downloadDir.substring("/data/emby/".length());
+                    // 如果下载目录不是根目录，提取相对路径
+                    String embyDownloadDir = getEmbyDownloadDir();
+                    if (downloadDir != null && !downloadDir.equals(embyDownloadDir)) {
+                        // 提取相对于下载根目录的路径
+                        String downloadDirPrefix = embyDownloadDir + "/";
+                        if (downloadDir.startsWith(downloadDirPrefix)) {
+                            String relativePath = downloadDir.substring(downloadDirPrefix.length());
                             fileInfo.setRelativePath(relativePath);
                             log.info("更新单文件FileInfo: filePath={}, relativePath={}", filePath, relativePath);
                         } else {
-                            // 文件直接在 /data/emby 根目录
+                            // 文件直接在根目录
                             fileInfo.setRelativePath("");
                             log.info("更新单文件FileInfo: filePath={}, relativePath=空（根目录）", filePath);
                         }
                     } else {
-                        // 文件直接在 /data/emby 根目录
+                        // 文件直接在根目录
                         fileInfo.setRelativePath("");
                         log.info("更新单文件FileInfo: filePath={}, relativePath=空（根目录）", filePath);
                     }

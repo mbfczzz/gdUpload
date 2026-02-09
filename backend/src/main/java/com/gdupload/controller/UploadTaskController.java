@@ -196,6 +196,27 @@ public class UploadTaskController {
         }
     }
 
+    @PutMapping("/{id}/target-path")
+    public Result<Void> updateTargetPath(@PathVariable Long id, @RequestBody Map<String, String> params) {
+        String targetPath = params.get("targetPath");
+        if (targetPath == null || targetPath.trim().isEmpty()) {
+            return Result.error("目标路径不能为空");
+        }
+
+        UploadTask task = uploadTaskService.getTaskDetail(id);
+        if (task == null) {
+            return Result.error("任务不存在");
+        }
+
+        // 检查任务状态：只允许修改待开始、已暂停、失败的任务
+        if (task.getStatus() != 0 && task.getStatus() != 3 && task.getStatus() != 5) {
+            return Result.error("只能修改待开始、已暂停或失败状态的任务路径");
+        }
+
+        boolean success = uploadTaskService.updateTaskTargetPath(id, targetPath);
+        return success ? Result.success("目标路径已更新") : Result.error("更新失败");
+    }
+
     @DeleteMapping("/{id}")
     public Result<Void> delete(@PathVariable Long id) {
         // Get task details before deletion for logging

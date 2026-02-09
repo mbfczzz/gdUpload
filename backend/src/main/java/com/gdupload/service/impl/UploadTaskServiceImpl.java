@@ -346,4 +346,30 @@ public class UploadTaskServiceImpl extends ServiceImpl<UploadTaskMapper, UploadT
 
         return null;
     }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean updateTaskTargetPath(Long taskId, String targetPath) {
+        UploadTask task = this.getById(taskId);
+        if (task == null) {
+            log.error("任务不存在: taskId={}", taskId);
+            return false;
+        }
+
+        String oldTargetPath = task.getTargetPath();
+        task.setTargetPath(targetPath);
+
+        boolean updated = this.updateById(task);
+
+        if (updated) {
+            log.info("更新任务目标路径成功: taskId={}, oldPath={}, newPath={}",
+                taskId, oldTargetPath, targetPath);
+
+            // 记录任务路径修改日志
+            systemLogService.logTaskOperation(taskId, task.getTaskName(), "TASK_UPDATE_PATH",
+                String.format("修改目标路径 - 原路径: %s, 新路径: %s", oldTargetPath, targetPath));
+        }
+
+        return updated;
+    }
 }

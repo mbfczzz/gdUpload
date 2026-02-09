@@ -93,6 +93,9 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         String cookie115 = null;
         String targetFolderId115 = null;
 
+        // Emby配置变量
+        String embyDownloadDir = null;
+
         for (SmartSearchConfig config : allConfigs) {
             try {
                 Map<String, Object> data = JSONUtil.toBean(config.getConfigData(), Map.class);
@@ -154,6 +157,11 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
                             targetFolderId115 = (String) data.get("targetFolderId115");
                         }
                         break;
+                    case "emby_config":
+                        if (data.containsKey("embyDownloadDir")) {
+                            embyDownloadDir = (String) data.get("embyDownloadDir");
+                        }
+                        break;
                 }
             } catch (Exception e) {
                 log.error("解析配置失败: {}", config.getConfigName(), e);
@@ -209,6 +217,11 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         }
         if (targetFolderId115 != null) {
             fullConfig.put("targetFolderId115", targetFolderId115);
+        }
+
+        // 添加Emby配置到返回结果
+        if (embyDownloadDir != null) {
+            fullConfig.put("embyDownloadDir", embyDownloadDir);
         }
 
         return fullConfig;
@@ -333,6 +346,22 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
                 config.setConfigData(JSONUtil.toJsonStr(config115));
                 config.setIsActive(true);
                 config.setRemark("115网盘转存配置");
+                configMapper.insert(config);
+            }
+
+            // 7. 保存Emby配置
+            Map<String, Object> embyConfig = new HashMap<>();
+            if (configData.containsKey("embyDownloadDir")) {
+                embyConfig.put("embyDownloadDir", configData.get("embyDownloadDir"));
+            }
+            if (!embyConfig.isEmpty()) {
+                SmartSearchConfig config = new SmartSearchConfig();
+                config.setUserId(userId);
+                config.setConfigName("Emby下载配置");
+                config.setConfigType("emby_config");
+                config.setConfigData(JSONUtil.toJsonStr(embyConfig));
+                config.setIsActive(true);
+                config.setRemark("Emby下载目录配置");
                 configMapper.insert(config);
             }
 

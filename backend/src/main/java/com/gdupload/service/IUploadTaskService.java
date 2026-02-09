@@ -83,4 +83,13 @@ public interface IUploadTaskService extends IService<UploadTask> {
      * @return 任务ID
      */
     Long createDownloadTask(String taskName, String targetPath, int totalCount);
+
+    /**
+     * 更新任务目标路径
+     *
+     * @param taskId 任务ID
+     * @param targetPath 新的目标路径
+     * @return 是否成功
+     */
+    boolean updateTaskTargetPath(Long taskId, String targetPath);
 }

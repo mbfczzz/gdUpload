@@ -31,22 +31,22 @@ public class RcloneUtil {
     @Value("${app.rclone.config-path:~/.config/rclone/rclone.conf}")
     private String rcloneConfigPath;
 
-    @Value("${app.rclone.concurrent-transfers:32}")
+    @Value("${app.rclone.concurrent-transfers:64}")
     private Integer concurrentTransfers;
 
-    @Value("${app.rclone.concurrent-transfers-resume:48}")
+    @Value("${app.rclone.concurrent-transfers-resume:80}")
     private Integer concurrentTransfersResume;
 
-    @Value("${app.rclone.checkers:64}")
+    @Value("${app.rclone.checkers:128}")
     private Integer checkers;
 
-    @Value("${app.rclone.checkers-resume:96}")
+    @Value("${app.rclone.checkers-resume:160}")
     private Integer checkersResume;
 
-    @Value("${app.rclone.multi-thread-streams:20}")
+    @Value("${app.rclone.multi-thread-streams:24}")
     private Integer multiThreadStreams;
 
-    @Value("${app.rclone.multi-thread-streams-resume:24}")
+    @Value("${app.rclone.multi-thread-streams-resume:32}")
     private Integer multiThreadStreamsResume;
 
     @Value("${app.rclone.buffer-size:512M}")
