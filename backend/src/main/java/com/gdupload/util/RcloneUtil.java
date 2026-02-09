@@ -31,11 +31,29 @@ public class RcloneUtil {
     @Value("${app.rclone.config-path:~/.config/rclone/rclone.conf}")
     private String rcloneConfigPath;
 
-    @Value("${app.rclone.concurrent-transfers:3}")
+    @Value("${app.rclone.concurrent-transfers:32}")
     private Integer concurrentTransfers;
 
-    @Value("${app.rclone.buffer-size:16M}")
+    @Value("${app.rclone.concurrent-transfers-resume:48}")
+    private Integer concurrentTransfersResume;
+
+    @Value("${app.rclone.checkers:64}")
+    private Integer checkers;
+
+    @Value("${app.rclone.checkers-resume:96}")
+    private Integer checkersResume;
+
+    @Value("${app.rclone.multi-thread-streams:20}")
+    private Integer multiThreadStreams;
+
+    @Value("${app.rclone.multi-thread-streams-resume:24}")
+    private Integer multiThreadStreamsResume;
+
+    @Value("${app.rclone.buffer-size:512M}")
     private String bufferSize;
+
+    @Value("${app.rclone.drive-chunk-size:512M}")
+    private String driveChunkSize;
 
     @Value("${app.rclone.timeout:3600}")
     private Integer timeout;
@@ -58,24 +76,24 @@ public class RcloneUtil {
         command.add("--config");
         command.add(rcloneConfigPath);
 
-        // 针对高性能服务器的优化配置（28核56线程128G内存10g带宽）
+        // 针对高性能服务器的优化配置（13账号轮询 + 10Gbps带宽 + 28核56线程128G内存）
         command.add("--transfers");
-        command.add("8");  // 并发传输数
+        command.add(String.valueOf(concurrentTransfers));  // 使用配置：普通上传并发数
 
         command.add("--checkers");
-        command.add("16");  // 文件检查并发数
+        command.add(String.valueOf(checkers));  // 使用配置：文件检查并发数
 
         command.add("--buffer-size");
-        command.add("256M");  // 缓冲区大小
+        command.add(bufferSize);  // 使用配置：缓冲区大小
 
         command.add("--drive-chunk-size");
-        command.add("512M");  // 上传块大小
+        command.add(driveChunkSize);  // 使用配置：上传块大小
 
         command.add("--drive-upload-cutoff");
-        command.add("512M");  // 大文件分块上传阈值
+        command.add(driveChunkSize);  // 大文件分块上传阈值（与chunk-size保持一致）
 
         command.add("--multi-thread-streams");
-        command.add("8");  // 单文件多线程数
+        command.add(String.valueOf(multiThreadStreams));  // 使用配置：单文件多线程数
 
         command.add("--fast-list");  // 使用快速列表模式
 
@@ -121,24 +139,25 @@ public class RcloneUtil {
         command.add("--config");
         command.add(rcloneConfigPath);
 
-        // 针对高性能服务器的极限优化配置（28核56线程128G内存10g带宽）
+        // 针对高性能服务器的极限优化配置（13账号轮询 + 10Gbps带宽 + 28核56线程128G内存）
+        // 断点续传使用更激进的并发配置
         command.add("--transfers");
-        command.add("16");  // 并发传输数
+        command.add(String.valueOf(concurrentTransfersResume));  // 使用配置：断点续传并发数
 
         command.add("--checkers");
-        command.add("32");  // 文件检查并发数
+        command.add(String.valueOf(checkersResume));  // 使用配置：文件检查并发数
 
         command.add("--buffer-size");
-        command.add("512M");  // 缓冲区大小
+        command.add(bufferSize);  // 使用配置：缓冲区大小
 
         command.add("--drive-chunk-size");
-        command.add("512M");  // 上传块大小
+        command.add(driveChunkSize);  // 使用配置：上传块大小
 
         command.add("--drive-upload-cutoff");
-        command.add("512M");  // 大文件分块上传阈值
+        command.add(driveChunkSize);  // 大文件分块上传阈值（与chunk-size保持一致）
 
         command.add("--multi-thread-streams");
-        command.add("16");  // 单文件多线程数（提升到16）
+        command.add(String.valueOf(multiThreadStreamsResume));  // 使用配置：单文件多线程数
 
         command.add("--fast-list");  // 使用快速列表模式
 

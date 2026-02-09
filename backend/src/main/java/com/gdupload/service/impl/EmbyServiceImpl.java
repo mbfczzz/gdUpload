@@ -1599,6 +1599,12 @@ public class EmbyServiceImpl implements IEmbyService {
 
                             log.info("[{}/{}] 开始下载: itemId={}", index + 1, itemIds.size(), itemId);
 
+                            // 再次检查停止标志（在实际下载前）
+                            if (stopFlag.get()) {
+                                log.info("[{}/{}] 任务已暂停，跳过下载: itemId={}", index + 1, itemIds.size(), itemId);
+                                return;
+                            }
+
                             // 更新FileInfo状态为下载中(1)
                             fileInfoService.updateFileStatus(currentFile.getId(), 1, null);
                             webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, null);
@@ -1606,6 +1612,12 @@ public class EmbyServiceImpl implements IEmbyService {
                             batchDownloadProgress.put("currentItemName", currentFile.getFileName());
 
                             Map<String, Object> result = downloadToServer(itemId);
+
+                            // 下载完成后再次检查停止标志
+                            if (stopFlag.get()) {
+                                log.info("[{}/{}] 任务已暂停，不更新下载结果: itemId={}", index + 1, itemIds.size(), itemId);
+                                return;
+                            }
 
                             boolean downloadOk;
                             if ("series".equals(result.get("type"))) {

@@ -141,8 +141,21 @@ public class UploadTaskController {
     public Result<Void> resume(@PathVariable Long id) {
         UploadTask task = uploadTaskService.getTaskDetail(id);
         if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
-            // Emby下载任务不支持恢复（暂停后需要重新创建）
-            return Result.error("Emby下载任务暂停后不支持恢复，请重新创建下载任务");
+            // Emby下载任务：支持断点续传
+            try {
+                // 从FileInfo表中获取所有文件的itemId（存储在filePath字段）
+                List<FileInfo> fileInfoList = fileInfoService.getTaskFiles(id);
+                List<String> itemIds = fileInfoList.stream()
+                    .map(FileInfo::getFilePath)
+                    .collect(java.util.stream.Collectors.toList());
+
+                // 调用断点续传方法（传入existingTaskId）
+                embyService.batchDownloadToServerAsync(itemIds, id);
+                return Result.success("Emby下载任务已恢复（会自动跳过已下载的文件）");
+            } catch (Exception e) {
+                log.error("恢复Emby下载任务失败: taskId={}", id, e);
+                return Result.error("恢复失败: " + e.getMessage());
+            }
         }
         boolean success = uploadTaskService.resumeTask(id);
 

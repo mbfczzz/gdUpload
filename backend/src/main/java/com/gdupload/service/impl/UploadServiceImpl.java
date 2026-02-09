@@ -625,51 +625,9 @@ public class UploadServiceImpl implements IUploadService {
                 // 更新账号配额状态（检查是否达到上限）
                 gdAccountService.updateAccountQuota(accountId, fileInfo.getFileSize());
 
-                // 探测账号是否仍然可用（上传后检测）
-                log.info("开始探测账号状态: accountId={}, accountName={}", accountId, account.getAccountName());
-                RcloneUtil.ProbeResult probeResult = rcloneUtil.probeAccount(
-                    account.getRcloneConfigName(),
-                    remotePath
-                );
-
-                if (probeResult.isQuotaExceeded()) {
-                    log.error("========== 探测检测到配额超限 ==========");
-                    log.error("账号ID: {}, 账号名称: {}", account.getId(), account.getAccountName());
-                    log.error("探测结果: {}", probeResult.getMessage());
-
-                    // 记录禁用时间（移除自动解封时间）
-                    LocalDateTime now = DateTimeUtil.now();
-                    account.setDisabledTime(now);
-                    account.setQuotaResetTime(null);  // 不再设置自动解封时间
-
-                    // 禁用账号
-                    account.setStatus(0);
-
-                    log.error("准备更新账号状态: 1 -> 0 (禁用)");
-                    log.error("禁用时间: {}",
-                        now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
-                    boolean updateResult = gdAccountService.updateById(account);
-                    log.error("账号状态更新结果: {}, 账号ID: {}", updateResult ? "成功" : "失败", account.getId());
-
-                    // 验证更新是否成功
-                    GdAccount updatedAccount = gdAccountService.getById(account.getId());
-                    log.error("更新后账号状态: {}",
-                        updatedAccount.getStatus());
-                    log.error("========================================");
-
-                    // 记录日志
-                    systemLogService.logFileUpload(taskId, fileInfo.getId(), fileInfo.getFileName(),
-                        fileInfo.getFileSize(), account.getId(), "ACCOUNT_QUOTA_EXCEEDED",
-                        String.format("探测检测到账号配额超限 - 账号: %s 已自动禁用，需手动启用", account.getAccountName()),
-                        probeResult.getMessage());
-
-                    log.warn("账号 {} 在上传成功后探测到配额超限，已自动禁用", account.getAccountName());
-                } else if (!probeResult.isAvailable()) {
-                    log.warn("探测账号失败，但不影响本次上传结果: accountId={}, message={}",
-                        accountId, probeResult.getMessage());
-                } else {
-                    log.info("探测成功: 账号 {} 仍然可用", account.getAccountName());
-                }
+                // 已移除上传后的探测逻辑（账号管理页面的探测功能保留）
+                // 原因：每次上传后探测会增加额外的API请求，影响上传速度
+                // 配额超限检测已通过rclone上传时的错误信息判断
 
                 return UploadResult.success();
             } else {

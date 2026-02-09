@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.gdupload.entity.UploadTask;
+import com.gdupload.mapper.FileInfoMapper;
 import com.gdupload.mapper.UploadTaskMapper;
 import com.gdupload.service.ISystemLogService;
 import com.gdupload.service.IUploadTaskService;
@@ -28,6 +29,7 @@ import java.util.List;
 public class UploadTaskServiceImpl extends ServiceImpl<UploadTaskMapper, UploadTask> implements IUploadTaskService {
 
     private final ISystemLogService systemLogService;
+    private final FileInfoMapper fileInfoMapper;
 
     @Override
     public Page<UploadTask> pageTasks(Page<UploadTask> page, String keyword, Integer status) {
@@ -43,7 +45,42 @@ public class UploadTaskServiceImpl extends ServiceImpl<UploadTaskMapper, UploadT
 
         wrapper.orderByDesc(UploadTask::getCreateTime);
 
-        return this.page(page, wrapper);
+        Page<UploadTask> result = this.page(page, wrapper);
+
+        // 实时计算每个任务的进度（基于FileInfo表的实际状态）
+        result.getRecords().forEach(task -> {
+            try {
+                // 查询文件状态统计
+                List<java.util.Map<String, Object>> stats = fileInfoMapper.selectTaskFileStats(task.getId());
+
+                int totalFiles = 0;
+                int completedFiles = 0; // status=2(已上传) + status=4(跳过)
+
+                for (java.util.Map<String, Object> stat : stats) {
+                    Integer fileStatus = (Integer) stat.get("status");
+                    Long count = (Long) stat.get("count");
+
+                    totalFiles += count.intValue();
+
+                    // status=2(已上传) 或 status=4(跳过) 都算完成
+                    if (fileStatus == 2 || fileStatus == 4) {
+                        completedFiles += count.intValue();
+                    }
+                }
+
+                // 更新实时进度
+                if (totalFiles > 0) {
+                    int realProgress = (int) ((completedFiles * 100L) / totalFiles);
+                    task.setProgress(realProgress);
+                    task.setUploadedCount(completedFiles);
+                    task.setTotalCount(totalFiles);
+                }
+            } catch (Exception e) {
+                log.warn("计算任务进度失败: taskId={}, error={}", task.getId(), e.getMessage());
+            }
+        });
+
+        return result;
     }
 
     @Override

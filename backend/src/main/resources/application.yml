@@ -108,8 +108,15 @@ app:
   rclone:
     path: /usr/bin/rclone
     config-path: /root/.config/rclone/rclone.conf
-    concurrent-transfers: 8
-    buffer-size: 64M
+    # 并发传输配置（针对13账号轮询 + 10Gbps带宽 + 28核128G服务器优化）
+    concurrent-transfers: 32  # 普通上传并发数（从8提升到32）
+    concurrent-transfers-resume: 48  # 断点续传并发数（更激进）
+    checkers: 64  # 文件检查并发数（普通上传）
+    checkers-resume: 96  # 文件检查并发数（断点续传）
+    multi-thread-streams: 20  # 单文件多线程数（普通上传）
+    multi-thread-streams-resume: 24  # 单文件多线程数（断点续传）
+    buffer-size: 512M  # 缓冲区大小（从64M提升到512M）
+    drive-chunk-size: 512M  # Google Drive上传块大小
     timeout: 3600
 
   # 上传配置
