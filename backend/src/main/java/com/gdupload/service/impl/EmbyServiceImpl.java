@@ -1455,57 +1455,82 @@ public class EmbyServiceImpl implements IEmbyService {
 
     @Override
     public Long batchDownloadToServerAsync(List<String> itemIds) {
-        // 1. 收集媒体项名称，用于自动生成任务名
-        List<String> itemNames = new ArrayList<>();
-        for (String itemId : itemIds) {
-            try {
-                EmbyItem detail = getItemDetail(itemId);
-                if (detail != null && detail.getName() != null) {
-                    itemNames.add(detail.getName());
-                }
-            } catch (Exception e) {
-                // 获取名称失败不影响
-            }
-        }
+        return batchDownloadToServerAsync(itemIds, null);
+    }
 
-        // 自动生成任务名
-        String taskName;
-        if (itemNames.size() == 1) {
-            taskName = "Emby下载 - " + itemNames.get(0);
-        } else if (itemNames.size() <= 3) {
-            taskName = "Emby下载 - " + String.join(", ", itemNames);
+    /**
+     * 批量下载到服务器（异步，支持断点续传）
+     *
+     * @param itemIds 媒体项ID列表
+     * @param existingTaskId 已存在的任务ID（用于恢复任务），如果为null则创建新任务
+     * @return 任务ID
+     */
+    public Long batchDownloadToServerAsync(List<String> itemIds, Long existingTaskId) {
+        Long taskId;
+        List<FileInfo> fileInfoList;
+
+        if (existingTaskId != null) {
+            // 恢复已存在的任务
+            taskId = existingTaskId;
+            fileInfoList = fileInfoService.getTaskFiles(taskId);
+            log.info("恢复Emby下载任务: taskId={}, 共 {} 个媒体项", taskId, fileInfoList.size());
+
+            // 更新任务状态为运行中
+            uploadTaskService.updateTaskStatus(taskId, 1, null);
         } else {
-            taskName = "Emby下载 - " + itemNames.get(0) + " 等" + itemIds.size() + "个媒体项";
-        }
-        // 截断过长的任务名
-        if (taskName.length() > 200) {
-            taskName = taskName.substring(0, 197) + "...";
-        }
+            // 创建新任务
+            // 1. 收集媒体项名称，用于自动生成任务名
+            List<String> itemNames = new ArrayList<>();
+            for (String itemId : itemIds) {
+                try {
+                    EmbyItem detail = getItemDetail(itemId);
+                    if (detail != null && detail.getName() != null) {
+                        itemNames.add(detail.getName());
+                    }
+                } catch (Exception e) {
+                    // 获取名称失败不影响
+                }
+            }
 
-        // 2. 创建 UploadTask（taskType=3）
-        Long taskId = uploadTaskService.createDownloadTask(taskName, "/data/emby", itemIds.size());
-        if (taskId == null) {
-            throw new BusinessException("创建下载任务失败");
-        }
+            // 自动生成任务名
+            String taskName;
+            if (itemNames.size() == 1) {
+                taskName = "Emby下载 - " + itemNames.get(0);
+            } else if (itemNames.size() <= 3) {
+                taskName = "Emby下载 - " + String.join(", ", itemNames);
+            } else {
+                taskName = "Emby下载 - " + itemNames.get(0) + " 等" + itemIds.size() + "个媒体项";
+            }
+            // 截断过长的任务名
+            if (taskName.length() > 200) {
+                taskName = taskName.substring(0, 197) + "...";
+            }
 
-        // 3. 为每个 itemId 创建 FileInfo 行
-        List<FileInfo> fileInfoList = new ArrayList<>();
-        for (int i = 0; i < itemIds.size(); i++) {
-            FileInfo fileInfo = new FileInfo();
-            fileInfo.setTaskId(taskId);
-            String name = i < itemNames.size() ? itemNames.get(i) : ("媒体项 " + itemIds.get(i));
-            fileInfo.setFileName(name);
-            fileInfo.setFilePath(itemIds.get(i)); // 存embyItemId
-            fileInfo.setFileSize(0L);
-            fileInfo.setStatus(0); // 待下载
-            fileInfo.setCreateTime(DateTimeUtil.now());
-            fileInfoList.add(fileInfo);
+            // 2. 创建 UploadTask（taskType=3）
+            taskId = uploadTaskService.createDownloadTask(taskName, "/data/emby", itemIds.size());
+            if (taskId == null) {
+                throw new BusinessException("创建下载任务失败");
+            }
+
+            // 3. 为每个 itemId 创建 FileInfo 行
+            fileInfoList = new ArrayList<>();
+            for (int i = 0; i < itemIds.size(); i++) {
+                FileInfo fileInfo = new FileInfo();
+                fileInfo.setTaskId(taskId);
+                String name = i < itemNames.size() ? itemNames.get(i) : ("媒体项 " + itemIds.get(i));
+                fileInfo.setFileName(name);
+                fileInfo.setFilePath(itemIds.get(i)); // 存embyItemId
+                fileInfo.setFileSize(0L);
+                fileInfo.setStatus(0); // 待下载
+                fileInfo.setCreateTime(DateTimeUtil.now());
+                fileInfoList.add(fileInfo);
+            }
+            fileInfoService.batchSaveFiles(taskId, fileInfoList);
         }
-        fileInfoService.batchSaveFiles(taskId, fileInfoList);
 
         // 4. 初始化进度信息（兼容旧的轮询接口）
         batchDownloadProgress.put("running", true);
-        batchDownloadProgress.put("totalCount", itemIds.size());
+        batchDownloadProgress.put("totalCount", fileInfoList.size());
         batchDownloadProgress.put("completedCount", 0);
         batchDownloadProgress.put("successCount", 0);
         batchDownloadProgress.put("failedCount", 0);
@@ -1518,16 +1543,16 @@ public class EmbyServiceImpl implements IEmbyService {
         AtomicBoolean stopFlag = new AtomicBoolean(false);
         downloadStopFlags.put(taskId, stopFlag);
 
-        // 6. 启动下载管理线程（3个并发下载）
+        // 6. 启动下载管理线程（5个并发下载）
         final Long finalTaskId = taskId;
-        final int CONCURRENT_DOWNLOADS = 3;
+        final int CONCURRENT_DOWNLOADS = 5;
         new Thread(() -> {
             AtomicInteger successCount = new AtomicInteger(0);
             AtomicInteger failedCount = new AtomicInteger(0);
             AtomicInteger skippedCount = new AtomicInteger(0);
 
             log.info("========================================");
-            log.info("批量下载任务开始: taskId={}, 共 {} 个媒体项, 并发数: {}", finalTaskId, itemIds.size(), CONCURRENT_DOWNLOADS);
+            log.info("批量下载任务开始: taskId={}, 共 {} 个媒体项, 并发数: {}", finalTaskId, fileInfoList.size(), CONCURRENT_DOWNLOADS);
             log.info("========================================");
 
             ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT_DOWNLOADS);
@@ -1613,13 +1638,6 @@ public class EmbyServiceImpl implements IEmbyService {
                             fileInfoService.updateFileStatus(currentFile.getId(), 3, e.getMessage());
                             webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 3, e.getMessage());
                         } finally {
-                            // 随机延迟1-3秒，避免请求过于密集
-                            try {
-                                Thread.sleep(1000 + (long)(Math.random() * 2000));
-                            } catch (InterruptedException ie) {
-                                Thread.currentThread().interrupt();
-                            }
-
                             latch.countDown();
 
                             // 更新进度

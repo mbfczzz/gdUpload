@@ -60,7 +60,6 @@ public class QuotaResetTask {
                 // 重置配额
                 account.setUsedQuota(0L);
                 account.setRemainingQuota(account.getDailyLimit());
-                account.setStatus(1);  // 启用
                 account.setQuotaResetTime(null);  // 清空重置时间
                 account.setDisabledTime(null);  // 清空禁用时间
 
@@ -98,7 +97,6 @@ public class QuotaResetTask {
             for (GdAccount account : accounts) {
                 account.setUsedQuota(0L);
                 account.setRemainingQuota(account.getDailyLimit());
-                account.setStatus(1);  // 启用
                 account.setQuotaResetTime(null);  // 清空重置时间
 
                 gdAccountService.updateById(account);

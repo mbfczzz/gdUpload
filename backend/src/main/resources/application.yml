@@ -14,27 +14,33 @@ spring:
     type: com.alibaba.druid.pool.DruidDataSource
     driver-class-name: com.mysql.cj.jdbc.Driver
 #    url: jdbc:mysql://104.251.122.51:3306/gd_upload_manager?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-    url: jdbc:mysql://127.0.0.1:3306/gd_upload_manager?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://127.0.0.1:3306/gd_upload_manager?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&autoReconnect=true&failOverReadOnly=false&maxReconnects=3&connectTimeout=10000&socketTimeout=60000
     username: root
     password: mbfczzzz@123
     druid:
-      initial-size: 5
-      min-idle: 5
-      max-active: 20
+      initial-size: 10
+      min-idle: 10
+      max-active: 50
       max-wait: 60000
-      time-between-eviction-runs-millis: 60000
-      min-evictable-idle-time-millis: 300000
+      # 连接保活和检测配置（关键）
+      time-between-eviction-runs-millis: 30000  # 30秒检测一次空闲连接
+      min-evictable-idle-time-millis: 60000     # 连接空闲60秒后被回收
+      max-evictable-idle-time-millis: 300000    # 连接最多空闲5分钟
       validation-query: SELECT 1
-      test-while-idle: true
-      test-on-borrow: true
+      validation-query-timeout: 3               # 验证查询超时3秒
+      test-while-idle: true                     # 空闲时检测连接有效性
+      test-on-borrow: true                      # 获取连接时检测
       test-on-return: false
+      keep-alive: true                          # 保持连接活跃
+      keep-alive-between-time-millis: 60000     # 每60秒发送保活查询
       pool-prepared-statements: true
       max-pool-prepared-statement-per-connection-size: 20
       filters: stat,wall
       connection-properties: druid.stat.mergeSql=true;druid.stat.slowSqlMillis=5000
-      # 防止连接超时的关键配置
-      keep-alive: true
-      max-evictable-idle-time-millis: 900000
+      # 连接泄漏检测
+      remove-abandoned: true
+      remove-abandoned-timeout: 1800            # 30分钟未归还的连接视为泄漏
+      log-abandoned: true
       web-stat-filter:
         enabled: true
         url-pattern: /*
@@ -77,6 +83,7 @@ mybatis-plus:
     cache-enabled: false
     call-setters-on-nulls: true
     jdbc-type-for-null: null
+    default-statement-timeout: 60  # SQL执行超时时间（秒）
     # log-impl: org.apache.ibatis.logging.stdout.StdOutImpl  # 注释掉以减少日志输出
 
 # 日志配置

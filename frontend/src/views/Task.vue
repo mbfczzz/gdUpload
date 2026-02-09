@@ -90,13 +90,13 @@
           <template #default="{ row }">
             <div class="action-buttons">
               <el-button
-                v-if="(row.status === 0 || row.status === 3) && row.taskType !== 3"
+                v-if="row.status === 0 || row.status === 3"
                 type="primary"
                 size="small"
                 @click="handleStart(row.id)"
               >
                 <el-icon><VideoPlay /></el-icon>
-                启动
+                {{ row.taskType === 3 ? '恢复' : '启动' }}
               </el-button>
               <el-button
                 v-if="row.status === 1"

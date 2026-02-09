@@ -193,7 +193,6 @@ public class GdAccountServiceImpl extends ServiceImpl<GdAccountMapper, GdAccount
         log.info("账号 {} 重置配额，标记今日 {} 条上传记录为失败状态", account.getAccountName(), affectedRows);
 
         // 恢复账号状态为启用
-        account.setStatus(1);
         account.setQuotaResetTime(null);
         account.setDisabledTime(null);
         this.updateById(account);

@@ -8,6 +8,7 @@ import com.gdupload.entity.UploadTask;
 import com.gdupload.mapper.UploadRecordMapper;
 import com.gdupload.service.*;
 import com.gdupload.util.DateTimeUtil;
+import com.gdupload.util.DbRetryUtil;
 import com.gdupload.util.RcloneResult;
 import com.gdupload.util.RcloneUtil;
 import lombok.AllArgsConstructor;
@@ -184,7 +185,11 @@ public class UploadServiceImpl implements IUploadService {
 
                             // 更新任务进度（进度 = 已处理文件数 / 总文件数）
                             int progress = (int) ((currentProcessed * 100.0) / taskSnapshot.getTotalCount());
-                            uploadTaskService.updateTaskProgress(taskId, currentUploaded, currentSize, progress);
+
+                            // 使用重试机制更新任务进度
+                            DbRetryUtil.executeVoid(() ->
+                                uploadTaskService.updateTaskProgress(taskId, currentUploaded, currentSize, progress)
+                            );
 
                             // 推送进度更新到WebSocket
                             webSocketService.pushTaskProgress(taskId, progress, currentUploaded, taskSnapshot.getTotalCount(),
@@ -204,7 +209,11 @@ public class UploadServiceImpl implements IUploadService {
                         } else {
                             // 失败也要更新进度
                             int progress = (int) ((currentProcessed * 100.0) / taskSnapshot.getTotalCount());
-                            uploadTaskService.updateTaskProgress(taskId, uploadedCount.get(), uploadedSize.get(), progress);
+
+                            // 使用重试机制更新任务进度
+                            DbRetryUtil.executeVoid(() ->
+                                uploadTaskService.updateTaskProgress(taskId, uploadedCount.get(), uploadedSize.get(), progress)
+                            );
 
                             // 推送进度更新到WebSocket（失败也算处理完成）
                             webSocketService.pushTaskProgress(taskId, progress, uploadedCount.get(), taskSnapshot.getTotalCount(),

@@ -11,6 +11,7 @@ import com.gdupload.service.IUploadService;
 import com.gdupload.service.IUploadTaskService;
 import com.gdupload.service.IEmbyService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -25,6 +26,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/task")
 @RequiredArgsConstructor
+@Slf4j
 public class UploadTaskController {
 
     private final IUploadTaskService uploadTaskService;
@@ -96,8 +98,21 @@ public class UploadTaskController {
     public Result<Void> start(@PathVariable Long id) {
         UploadTask task = uploadTaskService.getTaskDetail(id);
         if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
-            // Emby下载任务不支持从"启动"按钮重新启动
-            return Result.error("Emby下载任务不支持手动启动，请重新创建下载任务");
+            // Emby下载任务：重新启动（会自动跳过已下载的文件）
+            try {
+                // 获取任务的文件列表（itemIds）
+                List<FileInfo> fileList = fileInfoService.getTaskFiles(id);
+                List<String> itemIds = fileList.stream()
+                    .map(FileInfo::getFilePath)  // filePath存储的是embyItemId
+                    .collect(java.util.stream.Collectors.toList());
+
+                // 重新启动下载任务（会自动跳过已下载的文件）
+                embyService.batchDownloadToServerAsync(itemIds, id);
+                return Result.success("下载任务已重新启动（会自动跳过已下载的文件）");
+            } catch (Exception e) {
+                log.error("重新启动Emby下载任务失败: taskId={}", id, e);
+                return Result.error("启动失败: " + e.getMessage());
+            }
         }
         boolean success = uploadTaskService.startTask(id);
 
