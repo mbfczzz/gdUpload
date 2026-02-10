@@ -373,6 +373,38 @@
         </template>
       </el-card>
 
+      <!-- Emby配置 -->
+      <el-card class="config-section">
+        <template #header>
+          <div class="section-header">
+            <el-icon><VideoPlay /></el-icon>
+            <span>Emby配置</span>
+          </div>
+        </template>
+
+        <el-alert
+          title="Emby下载目录说明"
+          type="info"
+          :closable="false"
+          style="margin-bottom: 16px;"
+        >
+          <div style="font-size: 13px; line-height: 1.6;">
+            <p>配置Emby媒体下载到服务器的默认目录。</p>
+            <p style="margin-top: 4px;">此配置会影响所有Emby下载任务的默认保存路径。</p>
+          </div>
+        </el-alert>
+
+        <el-form-item label="下载目录">
+          <el-input
+            v-model="config.embyDownloadDir"
+            placeholder="/data/emby"
+          />
+          <div class="form-tip">
+            Emby媒体文件下载到服务器的目录路径（默认：/data/emby）
+          </div>
+        </el-form-item>
+      </el-card>
+
       <!-- 链接验证配置 -->
       <el-card class="config-section">
         <template #header>
@@ -568,6 +600,9 @@ const defaultConfig = {
   enable115Transfer: false,
   cookie115: '',
   targetFolderId115: '0',
+
+  // Emby配置
+  embyDownloadDir: '/data/emby',
 
   // 链接验证
   validateLinks: true,

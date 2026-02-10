@@ -97,3 +97,11 @@ export function validateRclone(configName) {
     params: { configName }
   })
 }
+
+// 探测账号是否可用
+export function probeAccount(id) {
+  return request({
+    url: `/account/${id}/probe`,
+    method: 'post'
+  })
+}

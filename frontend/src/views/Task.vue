@@ -142,6 +142,15 @@
                 修复路径
               </el-button>
               <el-button
+                v-if="row.status === 0 || row.status === 3 || row.status === 5"
+                type="primary"
+                size="small"
+                @click="handleUpdatePath(row)"
+              >
+                <el-icon><Edit /></el-icon>
+                修改目标路径
+              </el-button>
+              <el-button
                 type="danger"
                 size="small"
                 @click="handleDelete(row.id)"
@@ -191,6 +200,34 @@
         <el-table-column prop="errorMessage" label="错误信息" min-width="150" show-overflow-tooltip />
       </el-table>
     </el-dialog>
+
+    <!-- 修改目标路径对话框 -->
+    <el-dialog
+      v-model="pathDialogVisible"
+      title="修改目标路径"
+      width="600px"
+      :close-on-click-modal="false"
+    >
+      <el-form :model="pathForm" label-width="100px">
+        <el-form-item label="任务名称">
+          <el-input v-model="pathForm.taskName" disabled />
+        </el-form-item>
+        <el-form-item label="当前路径">
+          <el-input v-model="pathForm.oldPath" disabled />
+        </el-form-item>
+        <el-form-item label="新目标路径" required>
+          <el-input
+            v-model="pathForm.newPath"
+            placeholder="请输入新的目标路径"
+            clearable
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="pathDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="handleConfirmUpdatePath">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -206,7 +243,8 @@ import {
   Close,
   Document,
   Delete,
-  Tools
+  Tools,
+  Edit
 } from '@element-plus/icons-vue'
 import axios from 'axios'
 import websocketClient from '@/utils/websocket'
@@ -218,6 +256,13 @@ const fileDialogVisible = ref(false)
 const fileList = ref([])
 const currentTaskType = ref(null) // 当前查看文件的任务类型
 const taskSubscriptions = ref([])
+const pathDialogVisible = ref(false)
+const pathForm = reactive({
+  taskId: null,
+  taskName: '',
+  oldPath: '',
+  newPath: ''
+})
 
 const searchForm = reactive({
   keyword: '',
@@ -612,6 +657,38 @@ const handleFixPath = async (id) => {
     }
   } catch (error) {
     ElMessage.error('修复失败')
+  }
+}
+
+// 修改目标路径
+const handleUpdatePath = (row) => {
+  pathForm.taskId = row.id
+  pathForm.taskName = row.taskName
+  pathForm.oldPath = row.targetPath
+  pathForm.newPath = row.targetPath
+  pathDialogVisible.value = true
+}
+
+// 确认修改目标路径
+const handleConfirmUpdatePath = async () => {
+  if (!pathForm.newPath || pathForm.newPath.trim() === '') {
+    ElMessage.warning('请输入新的目标路径')
+    return
+  }
+
+  try {
+    const { data } = await axios.put(`/api/task/${pathForm.taskId}/target-path`, {
+      targetPath: pathForm.newPath
+    })
+    if (data.code === 200) {
+      ElMessage.success('目标路径已更新')
+      pathDialogVisible.value = false
+      getTaskList()
+    } else {
+      ElMessage.error(data.message)
+    }
+  } catch (error) {
+    ElMessage.error('更新失败')
   }
 }
 

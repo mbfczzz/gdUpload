@@ -7,11 +7,14 @@ import com.gdupload.entity.GdAccount;
 import com.gdupload.service.IGdAccountService;
 import com.gdupload.service.ISystemLogService;
 import com.gdupload.task.QuotaResetTask;
+import com.gdupload.util.RcloneUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Google Drive账号管理控制器
@@ -27,6 +30,7 @@ public class GdAccountController {
     private final IGdAccountService accountService;
     private final ISystemLogService systemLogService;
     private final QuotaResetTask quotaResetTask;
+    private final RcloneUtil rcloneUtil;
 
     @GetMapping("/page")
     public Result<PageResult<GdAccount>> page(
@@ -195,6 +199,49 @@ public class GdAccountController {
             return Result.success("所有账号配额已重置");
         } catch (Exception e) {
             return Result.error("重置失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 探测账号是否可用
+     */
+    @PostMapping("/{id}/probe")
+    public Result<Map<String, Object>> probeAccount(@PathVariable Long id) {
+        GdAccount account = accountService.getById(id);
+        if (account == null) {
+            return Result.error("账号不存在");
+        }
+
+        try {
+            // 使用rclone探测账号（上传1MB测试文件）
+            RcloneUtil.ProbeResult probeResult = rcloneUtil.probeAccount(
+                account.getRcloneConfigName(),
+                "/"  // 探测根目录
+            );
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("available", probeResult.isAvailable());
+            result.put("quotaExceeded", probeResult.isQuotaExceeded());
+            result.put("message", probeResult.getMessage());
+
+            // 记录探测日志
+            String logLevel = probeResult.isAvailable() ? "INFO" : "WARN";
+            systemLogService.logAccount(id, 1, logLevel, "ACCOUNT_PROBE",
+                String.format("探测账号 - 账号名: %s, 结果: %s",
+                    account.getAccountName(), probeResult.getMessage()));
+
+            if (probeResult.isAvailable()) {
+                return Result.success("账号可用", result);
+            } else if (probeResult.isQuotaExceeded()) {
+                return Result.error("配额超限", result);
+            } else {
+                return Result.error("账号不可用: " + probeResult.getMessage(), result);
+            }
+        } catch (Exception e) {
+            systemLogService.logAccount(id, 1, "ERROR", "ACCOUNT_PROBE",
+                String.format("探测账号失败 - 账号名: %s, 错误: %s",
+                    account.getAccountName(), e.getMessage()));
+            return Result.error("探测失败: " + e.getMessage());
         }
     }
 }

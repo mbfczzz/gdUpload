@@ -143,7 +143,7 @@
           </template>
         </el-table-column>
         <el-table-column prop="priority" label="优先级" width="80" />
-        <el-table-column label="操作" fixed="right" width="250">
+        <el-table-column label="操作" fixed="right" width="300">
           <template #default="{ row }">
             <el-button link type="primary" @click="handleEdit(row)">
               编辑
@@ -154,6 +154,9 @@
               @click="handleToggleStatus(row)"
             >
               {{ row.status === 1 ? '禁用' : '启用' }}
+            </el-button>
+            <el-button link type="primary" @click="handleProbe(row)">
+              探测
             </el-button>
             <el-button link type="primary" @click="handleResetQuota(row)">
               重置配额
@@ -253,7 +256,8 @@ import {
   deleteAccount,
   batchDeleteAccount,
   toggleAccountStatus,
-  resetAccountQuota
+  resetAccountQuota,
+  probeAccount
 } from '@/api/account'
 
 // 当前时间
@@ -559,6 +563,36 @@ const handleResetQuota = (row) => {
       console.error('重置失败:', error)
     }
   })
+}
+
+// 探测账号
+const handleProbe = async (row) => {
+  const loadingMsg = ElMessage({
+    message: '正在探测账号，请稍候...',
+    type: 'info',
+    duration: 0
+  })
+
+  try {
+    const res = await probeAccount(row.id)
+    loadingMsg.close()
+
+    if (res.code === 200) {
+      ElMessage.success(`探测成功: ${res.data.message}`)
+    } else {
+      if (res.data && res.data.quotaExceeded) {
+        ElMessage.error(`探测失败: 配额超限`)
+      } else {
+        ElMessage.error(`探测失败: ${res.message}`)
+      }
+    }
+    // 刷新列表以更新状态
+    handleSearch()
+  } catch (error) {
+    loadingMsg.close()
+    ElMessage.error('探测失败: ' + (error.message || '未知错误'))
+    console.error('探测失败:', error)
+  }
 }
 
 // 初始化
