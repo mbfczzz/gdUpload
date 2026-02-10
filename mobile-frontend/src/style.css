@@ -1,0 +1,28 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #f7f8fa;
+}
+
+#app {
+  min-height: 100vh;
+}
+
+/* 自定义主题色 */
+:root {
+  --van-primary-color: #007aff;
+  --van-success-color: #34c759;
+  --van-warning-color: #ff9500;
+  --van-danger-color: #ff3b30;
+  --van-text-color: #1d1d1f;
+  --van-text-color-2: #86868b;
+  --van-background-color: #f7f8fa;
+  --van-border-color: #e5e5e7;
+}

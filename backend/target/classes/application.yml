@@ -1,0 +1,175 @@
+# 服务器配置
+server:
+  port: 8099
+  servlet:
+    context-path: /api
+
+# Spring配置
+spring:
+  application:
+    name: gd-upload-manager
+
+  # 数据源配置
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    driver-class-name: com.mysql.cj.jdbc.Driver
+#    url: jdbc:mysql://104.251.122.51:3306/gd_upload_manager?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://127.0.0.1:3306/gd_upload_manager?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&autoReconnect=true&failOverReadOnly=false&maxReconnects=3&connectTimeout=10000&socketTimeout=60000
+    username: root
+    password: mbfczzzz@123
+    druid:
+      initial-size: 10
+      min-idle: 10
+      max-active: 50
+      max-wait: 60000
+      # 连接保活和检测配置（关键）
+      time-between-eviction-runs-millis: 30000  # 30秒检测一次空闲连接
+      min-evictable-idle-time-millis: 60000     # 连接空闲60秒后被回收
+      max-evictable-idle-time-millis: 300000    # 连接最多空闲5分钟
+      validation-query: SELECT 1
+      validation-query-timeout: 3               # 验证查询超时3秒
+      test-while-idle: true                     # 空闲时检测连接有效性
+      test-on-borrow: true                      # 获取连接时检测
+      test-on-return: false
+      keep-alive: true                          # 保持连接活跃
+      keep-alive-between-time-millis: 60000     # 每60秒发送保活查询
+      pool-prepared-statements: true
+      max-pool-prepared-statement-per-connection-size: 20
+      filters: stat,wall
+      connection-properties: druid.stat.mergeSql=true;druid.stat.slowSqlMillis=5000
+      # 连接泄漏检测
+      remove-abandoned: true
+      remove-abandoned-timeout: 1800            # 30分钟未归还的连接视为泄漏
+      log-abandoned: true
+      web-stat-filter:
+        enabled: true
+        url-pattern: /*
+        exclusions: "*.js,*.gif,*.jpg,*.png,*.css,*.ico,/druid/*"
+      stat-view-servlet:
+        enabled: true
+        url-pattern: /druid/*
+        reset-enable: false
+        login-username: admin
+        login-password: admin
+
+  # 文件上传配置
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 100MB
+      max-request-size: 100MB
+
+  # Jackson配置
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+    serialization:
+      write-dates-as-timestamps: false
+    default-property-inclusion: non_null
+
+# MyBatis Plus配置
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.gdupload.entity
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+    banner: false
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+    call-setters-on-nulls: true
+    jdbc-type-for-null: null
+    default-statement-timeout: 60  # SQL执行超时时间（秒）
+    # log-impl: org.apache.ibatis.logging.stdout.StdOutImpl  # 注释掉以减少日志输出
+
+# 日志配置
+logging:
+  level:
+    root: INFO
+    com.gdupload: INFO
+    com.baomidou.mybatisplus: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"
+  file:
+    name: logs/gd-upload-manager.log
+  logback:
+    rollingpolicy:
+      max-file-size: 100MB
+      max-history: 30
+      file-name-pattern: logs/gd-upload-manager-%d{yyyy-MM-dd}.%i.log
+
+# 应用自定义配置
+app:
+  # Rclone配置
+  rclone:
+    path: /usr/bin/rclone
+    config-path: /root/.config/rclone/rclone.conf
+    # 并发传输配置（针对13账号轮询 + 10Gbps带宽 + 28核128G服务器优化）
+    concurrent-transfers: 64  # 普通上传并发数（从32提升到64）
+    concurrent-transfers-resume: 80  # 断点续传并发数（更激进）
+    checkers: 128  # 文件检查并发数（普通上传）
+    checkers-resume: 160  # 文件检查并发数（断点续传）
+    multi-thread-streams: 24  # 单文件多线程数（普通上传）
+    multi-thread-streams-resume: 32  # 单文件多线程数（断点续传）
+    buffer-size: 512M  # 缓冲区大小
+    drive-chunk-size: 512M  # Google Drive上传块大小
+    timeout: 3600
+
+  # 上传配置
+  upload:
+    concurrent-files: 5
+    retry-times: 3
+    check-interval: 60
+    temp-dir: /tmp/gd-upload
+
+  # 账号配置
+  account:
+    daily-limit: 805306368000  # 750GB in bytes
+    warning-threshold: 0.9
+    auto-switch: true
+
+  # 任务配置
+  task:
+    max-concurrent-tasks: 5
+    cleanup-days: 30
+
+  # WebSocket配置
+  websocket:
+    enabled: true
+    path: /ws
+    allowed-origins: "*"
+
+  # Emby配置
+  emby:
+    server-url: http://209.146.116.4:8096  # Emby服务器地址
+    api-key: ""  # Emby API密钥（可选，如果为空则使用用户名密码登录）
+    user-id: ""  # Emby用户ID（可选，留空自动获取）
+    username: "mbfczzzz"  # 用户名（用于密码登录，可选）
+    password: "mbfczzzz@123"  # 密码（用于密码登录，可选）
+    timeout: 30000  # 请求超时时间（毫秒）
+    enabled: true  # 是否启用Emby集成
+    download-dir: /data/emby  # Emby下载目录（默认：/data/emby）
+
+  # AI配置
+  ai:
+    enabled: false  # 是否启用AI筛选（默认关闭，需要配置API Key后启用）
+    provider: claude  # AI提供商：claude, openai, ollama
+    api-key: ${ANTHROPIC_API_KEY:}  # API密钥（从环境变量读取，或直接填写）
+    api-url: http://localhost:11434  # Ollama API地址（仅Ollama需要）
+    model: claude-3-5-sonnet-20241022  # 模型名称
+    max-tokens: 1024  # 最大token数
+    temperature: 0.7  # 温度参数（0-1）
+
+  # 115网盘配置
+  115:
+    cookie: ""  # 115网盘Cookie（请填写你的115 Cookie）
+    target-folder-id: "0"  # 默认转存目标文件夹ID（0表示根目录）
+
+# TMDB配置
+tmdb:
+  api:
+    key: "e7db196b5ec2ea9e555d39635bb7441f"  # TMDB API密钥（从环境变量读取，或直接填写）
