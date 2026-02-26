@@ -72,9 +72,8 @@ public class GdAccountController {
         if (success) {
             // Log account creation
             systemLogService.logAccount(account.getId(), 1, "INFO", "ACCOUNT_CREATE",
-                String.format("创建账号 - 账号名: %s, 配置名: %s, 每日限额: %d GB",
-                    account.getAccountName(), account.getRcloneConfigName(),
-                    account.getDailyLimit() / 1024 / 1024 / 1024));
+                String.format("创建账号 - 账号名: %s, 配置名: %s",
+                    account.getAccountName(), account.getRcloneConfigName()));
         }
 
         return success ? Result.success("添加成功") : Result.error("添加失败");

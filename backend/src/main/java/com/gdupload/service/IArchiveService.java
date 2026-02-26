@@ -1,0 +1,57 @@
+package com.gdupload.service;
+
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.gdupload.dto.ArchiveAnalyzeResult;
+import com.gdupload.dto.ArchiveExecuteRequest;
+import com.gdupload.dto.ArchiveTmdbItem;
+import com.gdupload.entity.ArchiveHistory;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 归档服务接口
+ */
+public interface IArchiveService {
+
+    /**
+     * 用正则解析文件名，提取各组成部分
+     */
+    ArchiveAnalyzeResult analyzeFilename(String filename);
+
+    /**
+     * 用 AI 分析文件名（正则无法解析时的回退方案）
+     */
+    ArchiveAnalyzeResult aiAnalyzeFilename(String filename);
+
+    /**
+     * 搜索 TMDB，返回最多5条候选结果
+     */
+    List<ArchiveTmdbItem> searchTmdb(String title, String year, String type);
+
+    /**
+     * 执行归档：重命名 + 移动文件 + 记录历史
+     */
+    Map<String, Object> executeArchive(ArchiveExecuteRequest req);
+
+    /**
+     * 将文件标记为需要人工处理
+     */
+    Map<String, Object> markManual(String originalPath, String originalFilename, String remark);
+
+    /**
+     * 获取所有可用分类列表
+     */
+    List<String> getCategories();
+
+    /**
+     * 分页查询归档历史
+     */
+    IPage<ArchiveHistory> getHistory(Page<ArchiveHistory> page, String status);
+
+    /**
+     * 更新人工处理备注
+     */
+    void updateRemark(Long historyId, String remark);
+}
