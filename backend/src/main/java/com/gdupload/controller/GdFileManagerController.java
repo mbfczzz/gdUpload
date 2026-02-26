@@ -1,0 +1,111 @@
+package com.gdupload.controller;
+
+import com.gdupload.common.BusinessException;
+import com.gdupload.common.Result;
+import com.gdupload.dto.GdFileItem;
+import com.gdupload.entity.GdAccount;
+import com.gdupload.service.IGdAccountService;
+import com.gdupload.service.IGdFileManagerService;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+/**
+ * GD文件管理控制器
+ */
+@RestController
+@RequestMapping("/gd-file")
+@RequiredArgsConstructor
+public class GdFileManagerController {
+
+    private final IGdFileManagerService gdFileManagerService;
+    private final IGdAccountService accountService;
+
+    /**
+     * 列出目录内容
+     */
+    @GetMapping("/list")
+    public Result<List<GdFileItem>> list(
+            @RequestParam Long accountId,
+            @RequestParam(defaultValue = "") String path) {
+        GdAccount account = getValidAccount(accountId);
+        List<GdFileItem> files = gdFileManagerService.listFiles(account.getRcloneConfigName(), path);
+        return Result.success(files);
+    }
+
+    /**
+     * 删除文件
+     */
+    @DeleteMapping("/file")
+    public Result<Void> deleteFile(@RequestBody DeleteFileRequest req) {
+        GdAccount account = getValidAccount(req.getAccountId());
+        gdFileManagerService.deleteFile(account.getRcloneConfigName(), req.getFilePath());
+        return Result.success();
+    }
+
+    /**
+     * 删除目录
+     */
+    @DeleteMapping("/dir")
+    public Result<Void> deleteDir(@RequestBody DeleteDirRequest req) {
+        GdAccount account = getValidAccount(req.getAccountId());
+        gdFileManagerService.deleteDirectory(account.getRcloneConfigName(), req.getDirPath());
+        return Result.success();
+    }
+
+    /**
+     * 移动/重命名
+     */
+    @PutMapping("/move")
+    public Result<Void> move(@RequestBody MoveRequest req) {
+        GdAccount account = getValidAccount(req.getAccountId());
+        gdFileManagerService.moveItem(account.getRcloneConfigName(), req.getOldPath(), req.getNewPath(), Boolean.TRUE.equals(req.getIsDir()));
+        return Result.success();
+    }
+
+    /**
+     * 创建目录
+     */
+    @PostMapping("/mkdir")
+    public Result<Void> mkdir(@RequestBody MkdirRequest req) {
+        GdAccount account = getValidAccount(req.getAccountId());
+        gdFileManagerService.makeDirectory(account.getRcloneConfigName(), req.getPath());
+        return Result.success();
+    }
+
+    private GdAccount getValidAccount(Long accountId) {
+        GdAccount account = accountService.getById(accountId);
+        if (account == null) {
+            throw new BusinessException("账号不存在: " + accountId);
+        }
+        return account;
+    }
+
+    @Data
+    public static class DeleteFileRequest {
+        private Long accountId;
+        private String filePath;
+    }
+
+    @Data
+    public static class DeleteDirRequest {
+        private Long accountId;
+        private String dirPath;
+    }
+
+    @Data
+    public static class MoveRequest {
+        private Long accountId;
+        private String oldPath;
+        private String newPath;
+        private Boolean isDir;
+    }
+
+    @Data
+    public static class MkdirRequest {
+        private Long accountId;
+        private String path;
+    }
+}

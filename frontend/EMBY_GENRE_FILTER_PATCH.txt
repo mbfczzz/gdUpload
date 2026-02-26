@@ -1,0 +1,58 @@
+## Emby管理模块 - 添加类型筛选功能
+
+### 需要修改的地方：
+
+1. 在转存状态和下载状态筛选器后面，添加类型筛选下拉框（约在252-276行之间）：
+
+```vue
+<el-select
+  v-model="genreFilter"
+  placeholder="类型筛选"
+  style="width: 140px"
+  clearable
+  @change="applyGenreFilter"
+>
+  <el-option label="全部" value="" />
+  <el-option
+    v-for="genre in genres"
+    :key="genre.id"
+    :label="genre.name"
+    :value="genre.name"
+  />
+</el-select>
+```
+
+2. 在 script 部分添加 genreFilter ref（约在1012行附近）：
+
+```javascript
+const genreFilter = ref('') // 类型筛选
+```
+
+3. 添加 applyGenreFilter 函数（约在1402行附近，applyDownloadFilter后面）：
+
+```javascript
+// 应用类型筛选
+const applyGenreFilter = () => {
+  console.log('=== 应用类型筛选 ===')
+  console.log('筛选条件:', genreFilter.value)
+
+  // 重置到第一页并重新加载数据
+  currentPage.value = 1
+  loadLibraryItems()
+}
+```
+
+4. 修改 loadLibraryItems 函数中的 getLibraryItemsPaged 调用（约在1316行）：
+
+```javascript
+const res = await getLibraryItemsPaged(
+  currentLibrary.value.id,
+  startIndex,
+  pageSize.value,
+  transferStatusFilter.value || null,
+  downloadStatusFilter.value || null,
+  genreFilter.value || null  // 添加这一行
+)
+```
+
+完成这些修改后，重新编译前端即可。
