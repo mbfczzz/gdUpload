@@ -82,19 +82,40 @@
       >
         <el-table-column type="selection" width="55" />
         <el-table-column prop="fileName" label="文件名" min-width="200" show-overflow-tooltip />
-        <el-table-column prop="filePath" label="文件路径" min-width="300" show-overflow-tooltip />
-        <el-table-column label="文件大小" width="120">
+        <el-table-column prop="filePath" label="文件路径" min-width="260" show-overflow-tooltip />
+        <el-table-column label="文件大小" width="110">
           <template #default="{ row }">
             {{ formatSize(row.fileSize) }}
           </template>
         </el-table-column>
-        <el-table-column label="文件类型" width="120">
+        <el-table-column label="文件类型" width="80">
           <template #default="{ row }">
             <el-tag>{{ getFileExtension(row.fileName) }}</el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="100" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="isMediaFile(row.fileName)"
+              size="small"
+              type="success"
+              plain
+              @click="openArchiveDialog(row)"
+            >
+              <el-icon><FolderChecked /></el-icon>
+              归档
+            </el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </el-card>
+
+    <!-- 归档对话框 -->
+    <ArchiveDialog
+      v-model="archiveDialogVisible"
+      :file="archiveTargetFile"
+      @archived="onFileArchived"
+    />
 
     <!-- 空状态 -->
     <el-card v-if="scannedFiles.length === 0 && !scanning" class="empty-card">
@@ -115,12 +136,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import {
   FolderOpened,
+  FolderChecked,
   Select,
   Close,
   Upload,
   MagicStick
 } from '@element-plus/icons-vue'
 import axios from 'axios'
+import ArchiveDialog from '@/components/ArchiveDialog.vue'
 
 const router = useRouter()
 
@@ -416,6 +439,35 @@ const handleCreateTask = async () => {
     }
   }
 }
+
+// ─── 归档功能 ─────────────────────────────────────────────────────────────────
+
+const archiveDialogVisible = ref(false)
+const archiveTargetFile    = ref(null)
+
+const MEDIA_EXTENSIONS = new Set(['mkv', 'mp4', 'avi', 'ts', 'm2ts', 'mov', 'wmv', 'flv'])
+
+// 判断是否为媒体文件（只对媒体文件显示归档按钮）
+const isMediaFile = (fileName) => {
+  const ext = fileName.split('.').pop()?.toLowerCase()
+  return MEDIA_EXTENSIONS.has(ext)
+}
+
+// 打开归档对话框
+const openArchiveDialog = (file) => {
+  archiveTargetFile.value = file
+  archiveDialogVisible.value = true
+}
+
+// 归档成功回调
+const onFileArchived = ({ file, targetPath }) => {
+  ElMessage.success(`已归档到：${targetPath}`)
+  // 可选：从列表中移除已归档的文件
+  const idx = scannedFiles.value.findIndex(f => f.filePath === file.filePath)
+  if (idx >= 0) scannedFiles.value.splice(idx, 1)
+}
+
+// ─── 原有工具函数 ─────────────────────────────────────────────────────────────
 
 // 获取文件扩展名
 const getFileExtension = (fileName) => {
