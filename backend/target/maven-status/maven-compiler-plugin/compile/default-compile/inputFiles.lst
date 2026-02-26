@@ -15,7 +15,9 @@ D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\config\WebSocketC
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\controller\EmbyConfigController.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\mapper\EmbyGenreCacheMapper.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\common\BusinessException.java
+D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\controller\GdFileManagerController.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\controller\Resource115ManageController.java
+D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\service\IGdFileManagerService.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\service\impl\UploadServiceImpl.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\service\impl\SubscribeBatchTaskServiceImpl.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\dto\PagedResult.java
@@ -39,10 +41,12 @@ D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\mapper\TransferHi
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\service\IEmbyService.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\controller\FixFileInfoController.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\service\IResource115ManageService.java
+D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\dto\GdFileItem.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\entity\EmbyDownloadHistory.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\entity\EmbyTagCache.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\service\IGdAccountService.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\service\impl\Resource115ManageServiceImpl.java
+D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\service\impl\GdFileManagerServiceImpl.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\service\impl\GdAccountServiceImpl.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\mapper\EmbyLibraryCacheMapper.java
 D:\mbfczzzz\claude\gdUpload\backend\src\main\java\com\gdupload\GdUploadManagerApplication.java

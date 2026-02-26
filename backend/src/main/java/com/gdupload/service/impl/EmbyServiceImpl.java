@@ -10,6 +10,7 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.gdupload.common.BusinessException;
+import com.gdupload.config.EmbyProperties;
 import com.gdupload.dto.EmbyGenre;
 import com.gdupload.dto.EmbyItem;
 import com.gdupload.dto.EmbyLibrary;
@@ -17,6 +18,7 @@ import com.gdupload.dto.PagedResult;
 import com.gdupload.entity.EmbyConfig;
 import com.gdupload.entity.EmbyDownloadHistory;
 import com.gdupload.entity.FileInfo;
+import com.gdupload.entity.GdAccount;
 import com.gdupload.mapper.EmbyDownloadHistoryMapper;
 import com.gdupload.service.*;
 import com.gdupload.util.DateTimeUtil;
@@ -66,6 +68,12 @@ public class EmbyServiceImpl implements IEmbyService {
 
     @Autowired
     private ISmartSearchConfigService smartSearchConfigService;
+
+    @Autowired
+    private IGdAccountService gdAccountService;
+
+    @Autowired
+    private EmbyProperties embyProperties;
 
     @Value("${app.emby.download-dir:/data/emby}")
     private String defaultEmbyDownloadDir;
@@ -1317,15 +1325,17 @@ public class EmbyServiceImpl implements IEmbyService {
                 // 流式写入文件 - 使用 NIO Files 确保 UTF-8 文件名
                 log.info("开始写入文件: {}", targetPath.toString());
                 try (java.io.InputStream inputStream = connection.getInputStream();
-                     java.io.OutputStream outputStream = java.nio.file.Files.newOutputStream(targetPath)) {
+                     java.io.BufferedInputStream bufferedInput = new java.io.BufferedInputStream(inputStream, 4 * 1024 * 1024); // 4MB缓冲（10Gbps优化）
+                     java.io.OutputStream outputStream = java.nio.file.Files.newOutputStream(targetPath);
+                     java.io.BufferedOutputStream bufferedOutput = new java.io.BufferedOutputStream(outputStream, 4 * 1024 * 1024)) { // 4MB缓冲
 
-                    byte[] buffer = new byte[8192];
+                    byte[] buffer = new byte[1024 * 1024]; // 1MB buffer（10Gbps优化，从256KB提升到1MB）
                     int bytesRead;
                     long downloadedBytes = 0;
                     long lastLogTime = System.currentTimeMillis();
 
-                    while ((bytesRead = inputStream.read(buffer)) != -1) {
-                        outputStream.write(buffer, 0, bytesRead);
+                    while ((bytesRead = bufferedInput.read(buffer)) != -1) {
+                        bufferedOutput.write(buffer, 0, bytesRead);
                         downloadedBytes += bytesRead;
 
                         // 每5秒打印一次进度
@@ -1344,6 +1354,8 @@ public class EmbyServiceImpl implements IEmbyService {
                         }
                     }
 
+                    // 确保所有数据写入磁盘
+                    bufferedOutput.flush();
                     log.info("下载完成！总大小: {} MB", downloadedBytes / (1024 * 1024));
 
                     // 验证创建的文件
@@ -1835,5 +1847,296 @@ public class EmbyServiceImpl implements IEmbyService {
         } catch (Exception e) {
             log.error("更新FileInfo失败: fileInfoId={}, error={}", fileInfo.getId(), e.getMessage(), e);
         }
+    }
+
+    @Autowired
+    private IUploadService uploadService;
+
+    @Value("${app.emby.upload-dir:/data/upload}")
+    private String defaultUploadDir;
+
+    /**
+     * 获取上传目录（优先从数据库读取，否则使用默认值）
+     */
+    private String getUploadDir() {
+        try {
+            Map<String, Object> config = smartSearchConfigService.getFullConfig("default");
+            String uploadDir = (String) config.get("uploadDir");
+            if (uploadDir != null && !uploadDir.trim().isEmpty()) {
+                return uploadDir;
+            }
+        } catch (Exception e) {
+            log.warn("读取上传目录配置失败，使用默认值: {}", e.getMessage());
+        }
+        return defaultUploadDir;
+    }
+
+    /**
+     * 获取GD目标路径（优先从数据库读取，否则使用默认值）
+     */
+    private String getGdTargetPath() {
+        try {
+            Map<String, Object> config = smartSearchConfigService.getFullConfig("default");
+            String gdTargetPath = (String) config.get("gdTargetPath");
+            if (gdTargetPath != null && !gdTargetPath.trim().isEmpty()) {
+                return gdTargetPath;
+            }
+        } catch (Exception e) {
+            log.warn("读取GD目标路径配置失败，使用默认值: {}", e.getMessage());
+        }
+        return "/"; // 默认上传到根目录
+    }
+
+    @Override
+    public Long batchDownloadAndUploadAsync(List<String> itemIds) {
+        // 1. 收集媒体项名称，用于自动生成任务名
+        List<String> itemNames = new ArrayList<>();
+        for (String itemId : itemIds) {
+            try {
+                EmbyItem detail = getItemDetail(itemId);
+                if (detail != null && detail.getName() != null) {
+                    itemNames.add(detail.getName());
+                }
+            } catch (Exception e) {
+                // 获取名称失败不影响
+            }
+        }
+
+        // 自动生成任务名
+        String taskName;
+        if (itemNames.size() == 1) {
+            taskName = "Emby下载上传 - " + itemNames.get(0);
+        } else if (itemNames.size() <= 3) {
+            taskName = "Emby下载上传 - " + String.join(", ", itemNames);
+        } else {
+            taskName = "Emby下载上传 - " + itemNames.get(0) + " 等" + itemIds.size() + "个媒体项";
+        }
+        // 截断过长的任务名
+        if (taskName.length() > 200) {
+            taskName = taskName.substring(0, 197) + "...";
+        }
+
+        // 2. 创建 UploadTask（taskType=5 表示下载上传任务）
+        String gdTargetPath = getGdTargetPath();
+        Long taskId = uploadTaskService.createDownloadUploadTask(taskName, getUploadDir(), gdTargetPath, itemIds.size());
+        if (taskId == null) {
+            throw new BusinessException("创建下载上传任务失败");
+        }
+        log.info("创建下载上传任务: taskId={}, 上传目录={}, GD目标路径={}", taskId, getUploadDir(), gdTargetPath);
+
+        // 3. 为每个 itemId 创建 FileInfo 行
+        List<FileInfo> fileInfoList = new ArrayList<>();
+        for (int i = 0; i < itemIds.size(); i++) {
+            FileInfo fileInfo = new FileInfo();
+            fileInfo.setTaskId(taskId);
+            String name = i < itemNames.size() ? itemNames.get(i) : ("媒体项 " + itemIds.get(i));
+            fileInfo.setFileName(name);
+            fileInfo.setFilePath(itemIds.get(i)); // 存embyItemId
+            fileInfo.setFileSize(0L);
+            fileInfo.setStatus(0); // 待下载
+            fileInfo.setCreateTime(DateTimeUtil.now());
+            fileInfoList.add(fileInfo);
+        }
+        fileInfoService.batchSaveFiles(taskId, fileInfoList);
+
+        // 4. 设置停止标志
+        AtomicBoolean stopFlag = new AtomicBoolean(false);
+        downloadStopFlags.put(taskId, stopFlag);
+
+        // 5. 启动并发下载上传线程
+        final Long finalTaskId = taskId;
+        new Thread(() -> {
+            // 使用 AtomicInteger 保证线程安全
+            AtomicInteger successCount = new AtomicInteger(0);
+            AtomicInteger failedCount = new AtomicInteger(0);
+
+            // 获取并发下载数配置
+            int concurrentDownloads = embyProperties.getConcurrentDownloads();
+            if (concurrentDownloads <= 0) {
+                concurrentDownloads = 3; // 默认3个并发
+            }
+
+            log.info("========================================");
+            log.info("批量下载上传任务开始: taskId={}, 共 {} 个媒体项, 并发数: {}",
+                finalTaskId, itemIds.size(), concurrentDownloads);
+            log.info("下载目录: {}", getUploadDir());
+            log.info("========================================");
+
+            // 创建固定大小的线程池
+            ExecutorService executor = Executors.newFixedThreadPool(concurrentDownloads);
+            CountDownLatch latch = new CountDownLatch(itemIds.size());
+
+            try {
+                for (int i = 0; i < itemIds.size(); i++) {
+                    final int index = i;
+                    final String itemId = itemIds.get(index);
+                    final FileInfo currentFile = fileInfoList.get(index);
+
+                    // 提交任务到线程池
+                    executor.submit(() -> {
+                        try {
+                            // 检查停止标志
+                            if (stopFlag.get()) {
+                                log.info("下载上传任务被停止: taskId={}", finalTaskId);
+                                latch.countDown();
+                                return;
+                            }
+
+                            log.info("[{}/{}] 开始处理: {}", index + 1, itemIds.size(), currentFile.getFileName());
+
+                            try {
+                                // 步骤1: 下载到上传目录
+                                log.info("[{}/{}] 步骤1: 下载文件...", index + 1, itemIds.size());
+                                fileInfoService.updateFileStatus(currentFile.getId(), 1, "正在下载");
+                                webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, "正在下载");
+
+                                EmbyItem item = getItemDetail(itemId);
+                                if (item == null) {
+                                    throw new BusinessException("媒体项不存在: " + itemId);
+                                }
+
+                                // 下载到上传目录
+                                Map<String, Object> downloadResult = downloadSingleItem(item, getUploadDir());
+
+                                if (downloadResult == null || !Boolean.TRUE.equals(downloadResult.get("success"))) {
+                                    throw new BusinessException("下载失败");
+                                }
+
+                                String filePath = (String) downloadResult.get("filePath");
+                                log.info("[{}/{}] 下载成功: {}", index + 1, itemIds.size(), filePath);
+
+                                // 更新FileInfo的路径信息
+                                log.info("[{}/{}] 开始更新FileInfo...", index + 1, itemIds.size());
+                                currentFile.setFilePath(filePath);
+                                currentFile.setFileName((String) downloadResult.get("filename"));
+                                Long fileSize = (Long) downloadResult.get("size");
+                                if (fileSize != null) {
+                                    currentFile.setFileSize(fileSize);
+                                }
+                                log.info("[{}/{}] FileInfo更新内容: filePath={}, fileName={}, fileSize={}",
+                                    index + 1, itemIds.size(), filePath, currentFile.getFileName(), fileSize);
+                                fileInfoService.updateById(currentFile);
+                                log.info("[{}/{}] FileInfo更新成功", index + 1, itemIds.size());
+
+                                // 步骤2: 上传到Google Drive
+                                log.info("[{}/{}] 步骤2: 上传到Google Drive...", index + 1, itemIds.size());
+                                fileInfoService.updateFileStatus(currentFile.getId(), 1, "正在上传");
+                                webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, "正在上传");
+
+                                // 获取可用账号
+                                GdAccount account = gdAccountService.getNextAvailableAccountInRotation(finalTaskId, currentFile.getFileSize());
+                                if (account == null) {
+                                    throw new BusinessException("没有可用的账号");
+                                }
+                                log.info("[{}/{}] 使用账号: {}", index + 1, itemIds.size(), account.getAccountName());
+
+                                // 调用上传服务（这会创建上传任务并执行）
+                                uploadService.uploadFileInternal(finalTaskId, currentFile.getId(), account.getId());
+
+                                log.info("[{}/{}] 上传成功!", index + 1, itemIds.size());
+                                successCount.incrementAndGet();
+
+                                fileInfoService.updateFileStatus(currentFile.getId(), 2, null);
+                                webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 2, "完成");
+
+                                // 保存下载历史（标记为download_upload类型）
+                                EmbyDownloadHistory history = new EmbyDownloadHistory();
+                                EmbyConfig config = embyConfigService.getDefaultConfig();
+                                if (config != null) {
+                                    history.setEmbyItemId(itemId);
+                                    history.setEmbyConfigId(config.getId());
+                                    history.setDownloadStatus("success");
+                                    history.setTaskType("download_upload");
+                                    history.setFilePath(filePath);
+                                    history.setFileSize(fileSize);
+                                    history.setCreateTime(LocalDateTime.now());
+                                    history.setUpdateTime(LocalDateTime.now());
+                                    downloadHistoryMapper.insert(history);
+                                }
+
+                            } catch (Exception e) {
+                                failedCount.incrementAndGet();
+                                log.error("[{}/{}] 处理失败: {}, 错误: {}", index + 1, itemIds.size(), currentFile.getFileName(), e.getMessage());
+                                fileInfoService.updateFileStatus(currentFile.getId(), 3, e.getMessage());
+                                webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 3, e.getMessage());
+
+                                // 保存失败的下载历史
+                                EmbyDownloadHistory history = new EmbyDownloadHistory();
+                                EmbyConfig config = embyConfigService.getDefaultConfig();
+                                if (config != null) {
+                                    history.setEmbyItemId(itemId);
+                                    history.setEmbyConfigId(config.getId());
+                                    history.setDownloadStatus("failed");
+                                    history.setTaskType("download_upload");
+                                    history.setErrorMessage(e.getMessage());
+                                    history.setCreateTime(LocalDateTime.now());
+                                    history.setUpdateTime(LocalDateTime.now());
+                                    downloadHistoryMapper.insert(history);
+                                }
+                            } finally {
+                                // 完成一个任务
+                                latch.countDown();
+
+                                // 更新任务进度
+                                int completed = successCount.get() + failedCount.get();
+                                int progress = (int) ((completed * 100L) / itemIds.size());
+                                uploadTaskService.updateTaskProgress(finalTaskId, completed, 0L, progress);
+                                webSocketService.pushTaskProgress(finalTaskId, progress,
+                                    completed, itemIds.size(), 0L, 0L,
+                                    currentFile.getFileName());
+                            }
+                        } catch (Exception threadEx) {
+                            log.error("线程执行异常", threadEx);
+                            latch.countDown();
+                        }
+                    });
+                }
+
+                // 关闭线程池，不再接受新任务
+                executor.shutdown();
+
+                // 等待所有任务完成
+                log.info("等待所有下载上传任务完成...");
+                latch.await();
+
+                log.info("所有任务已提交完成，等待线程池关闭...");
+                executor.awaitTermination(1, java.util.concurrent.TimeUnit.HOURS);
+
+                // 更新最终状态
+                int finalSuccessCount = successCount.get();
+                int finalFailedCount = failedCount.get();
+
+                if (stopFlag.get()) {
+                    uploadTaskService.updateTaskStatus(finalTaskId, 3, null);
+                    webSocketService.pushTaskStatus(finalTaskId, 3, "已暂停");
+                } else if (finalFailedCount == 0) {
+                    uploadTaskService.updateTaskStatus(finalTaskId, 2, null);
+                    webSocketService.pushTaskStatus(finalTaskId, 2, "完成");
+                } else {
+                    uploadTaskService.updateTaskStatus(finalTaskId, 2,
+                        String.format("完成（成功%d，失败%d）", finalSuccessCount, finalFailedCount));
+                    webSocketService.pushTaskStatus(finalTaskId, 2, "完成（部分失败）");
+                }
+
+                // 确保最终进度为100%
+                uploadTaskService.updateTaskProgress(finalTaskId,
+                    finalSuccessCount + finalFailedCount, 0L, 100);
+
+                log.info("========================================");
+                log.info("批量下载上传任务完成: taskId={}, 成功: {}, 失败: {}",
+                    finalTaskId, finalSuccessCount, finalFailedCount);
+                log.info("========================================");
+
+            } catch (Exception e) {
+                log.error("批量下载上传任务异常: taskId={}", finalTaskId, e);
+                uploadTaskService.updateTaskStatus(finalTaskId, 3, e.getMessage());
+                webSocketService.pushTaskStatus(finalTaskId, 3, "任务异常");
+            } finally {
+                downloadStopFlags.remove(finalTaskId);
+            }
+        }, "Emby-DownloadUpload-" + taskId).start();
+
+        log.info("批量下载上传任务已启动: taskId={}, 共 {} 个媒体项", taskId, itemIds.size());
+        return taskId;
     }
 }

@@ -28,10 +28,11 @@ public interface IEmbyCacheService {
      * @param limit          数量限制
      * @param transferStatus 转存状态筛选（可选：success-成功, failed-失败, none-未转存）
      * @param downloadStatus 下载状态筛选（可选：success-成功, failed-失败, none-未下载）
+     * @param itemType       媒体类型筛选（可选：Movie-电影, Series-剧集）
      * @param forceRefresh   已废弃，保留参数仅为兼容性
      * @return 媒体项分页结果
      */
-    Map<String, Object> getLibraryItemsPaged(String libraryId, int startIndex, int limit, String transferStatus, String downloadStatus, boolean forceRefresh);
+    Map<String, Object> getLibraryItemsPaged(String libraryId, int startIndex, int limit, String transferStatus, String downloadStatus, String itemType, boolean forceRefresh);
 
     /**
      * 获取媒体项详情（从数据库）

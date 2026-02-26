@@ -94,6 +94,7 @@ public class EmbyController {
      * @param limit 每页数量（可选，默认50）
      * @param transferStatus 转存状态筛选（可选：success-成功, failed-失败, none-未转存）
      * @param downloadStatus 下载状态筛选（可选：success-成功, failed-失败, none-未下载）
+     * @param itemType 媒体类型筛选（可选：Movie-电影, Series-剧集）
      * @param forceRefresh 已废弃，保留仅为兼容性
      */
     @GetMapping("/libraries/{libraryId}/items/paged")
@@ -103,8 +104,9 @@ public class EmbyController {
             @RequestParam(required = false, defaultValue = "50") Integer limit,
             @RequestParam(required = false) String transferStatus,
             @RequestParam(required = false) String downloadStatus,
+            @RequestParam(required = false) String itemType,
             @RequestParam(required = false, defaultValue = "false") Boolean forceRefresh) {
-        Map<String, Object> result = cacheService.getLibraryItemsPaged(libraryId, startIndex, limit, transferStatus, downloadStatus, forceRefresh);
+        Map<String, Object> result = cacheService.getLibraryItemsPaged(libraryId, startIndex, limit, transferStatus, downloadStatus, itemType, forceRefresh);
 
         @SuppressWarnings("unchecked")
         List<EmbyItem> items = (List<EmbyItem>) result.get("items");
@@ -330,6 +332,33 @@ public class EmbyController {
         } catch (Exception e) {
             log.error("启动批量下载任务失败", e);
             return Result.error("启动批量下载失败: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 批量下载并上传Emby媒体项（后端队列执行）
+     * 下载一个剧集后立即上传，然后处理下一个
+     *
+     * @param itemIds 媒体项ID列表
+     * @return 批量下载上传任务启动结果
+     */
+    @PostMapping("/batch-download-and-upload")
+    public Result<Map<String, Object>> batchDownloadAndUpload(@RequestBody List<String> itemIds) {
+        log.info("批量下载并上传媒体项，共 {} 个", itemIds.size());
+        try {
+            // 启动后端批量下载上传任务，返回taskId
+            Long taskId = embyService.batchDownloadAndUploadAsync(itemIds);
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("status", "started");
+            result.put("message", "批量下载上传任务已启动，共 " + itemIds.size() + " 个媒体项");
+            result.put("totalCount", itemIds.size());
+            result.put("taskId", taskId);
+
+            return Result.success(result);
+        } catch (Exception e) {
+            log.error("启动批量下载上传任务失败", e);
+            return Result.error("启动批量下载上传失败: " + e.getMessage());
         }
     }
 

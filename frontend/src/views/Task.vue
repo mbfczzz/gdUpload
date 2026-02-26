@@ -50,9 +50,10 @@
       >
         <el-table-column type="selection" width="55" />
         <el-table-column prop="taskName" label="任务名称" min-width="150" />
-        <el-table-column label="类型" width="110">
+        <el-table-column label="类型" width="130">
           <template #default="{ row }">
             <el-tag v-if="row.taskType === 3" type="warning" size="small">Emby下载</el-tag>
+            <el-tag v-else-if="row.taskType === 5" type="success" size="small">下载上传</el-tag>
             <el-tag v-else type="primary" size="small">上传</el-tag>
           </template>
         </el-table-column>
@@ -66,7 +67,7 @@
         <el-table-column label="文件数" width="180">
           <template #default="{ row }">
             <div>
-              <span style="color: #67c23a;">{{ row.taskType === 3 ? '已下载' : '成功' }}: {{ row.uploadedCount }}</span>
+              <span style="color: #67c23a;">{{ (row.taskType === 3 || row.taskType === 5) ? '已处理' : '成功' }}: {{ row.uploadedCount }}</span>
               <span v-if="row.failedCount > 0" style="color: #f56c6c; margin-left: 8px;">失败: {{ row.failedCount }}</span>
               <span style="color: #909399; margin-left: 8px;">/ {{ row.totalCount }}</span>
             </div>
@@ -74,7 +75,7 @@
         </el-table-column>
         <el-table-column label="大小" width="150">
           <template #default="{ row }">
-            <span v-if="row.taskType !== 3">{{ formatSize(row.uploadedSize) }} / {{ formatSize(row.totalSize) }}</span>
+            <span v-if="row.taskType !== 3 && row.taskType !== 5">{{ formatSize(row.uploadedSize) }} / {{ formatSize(row.totalSize) }}</span>
             <span v-else style="color: #909399;">-</span>
           </template>
         </el-table-column>
@@ -96,7 +97,7 @@
                 @click="handleStart(row.id)"
               >
                 <el-icon><VideoPlay /></el-icon>
-                {{ row.taskType === 3 ? '恢复' : '启动' }}
+                {{ (row.taskType === 3 || row.taskType === 5) ? '恢复' : '启动' }}
               </el-button>
               <el-button
                 v-if="row.status === 1"
@@ -108,7 +109,7 @@
                 暂停
               </el-button>
               <el-button
-                v-if="(row.status === 5 || (row.status === 2 && row.failedCount > 0)) && row.taskType !== 3"
+                v-if="(row.status === 5 || (row.status === 2 && row.failedCount > 0)) && row.taskType !== 3 && row.taskType !== 5"
                 type="success"
                 size="small"
                 @click="handleRetry(row.id)"
@@ -586,6 +587,17 @@ const getStatusText = (status, taskType) => {
     const texts = {
       0: '待下载',
       1: '下载中',
+      2: '已完成',
+      3: '已暂停',
+      4: '已取消',
+      5: '失败'
+    }
+    return texts[status] || '未知'
+  }
+  if (taskType === 5) {
+    const texts = {
+      0: '待处理',
+      1: '处理中',
       2: '已完成',
       3: '已暂停',
       4: '已取消',

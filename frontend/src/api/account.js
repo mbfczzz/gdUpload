@@ -21,6 +21,14 @@ export function getAccountById(id) {
   })
 }
 
+// 获取全部账号列表
+export function getAccountList() {
+  return request({
+    url: '/account/list',
+    method: 'get'
+  })
+}
+
 // 获取可用账号列表
 export function getAvailableAccounts() {
   return request({
@@ -70,22 +78,6 @@ export function toggleAccountStatus(id, status) {
     url: `/account/${id}/status`,
     method: 'put',
     params: { status }
-  })
-}
-
-// 重置账号配额
-export function resetAccountQuota(id) {
-  return request({
-    url: `/account/${id}/reset-quota`,
-    method: 'put'
-  })
-}
-
-// 获取账号今日已使用配额
-export function getTodayQuota(id) {
-  return request({
-    url: `/account/${id}/today-quota`,
-    method: 'get'
   })
 }
 

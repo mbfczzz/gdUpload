@@ -44,13 +44,16 @@ export function getLibraryItems(libraryId, params) {
 /**
  * 获取指定媒体库的媒体项（分页）
  */
-export function getLibraryItemsPaged(libraryId, startIndex = 0, limit = 50, transferStatus = null, downloadStatus = null) {
+export function getLibraryItemsPaged(libraryId, startIndex = 0, limit = 50, transferStatus = null, downloadStatus = null, itemType = null) {
   const params = { startIndex, limit }
   if (transferStatus) {
     params.transferStatus = transferStatus
   }
   if (downloadStatus) {
     params.downloadStatus = downloadStatus
+  }
+  if (itemType) {
+    params.itemType = itemType
   }
   return request({
     url: `/emby/libraries/${libraryId}/items/paged`,
@@ -188,5 +191,16 @@ export function getBatchDownloadProgress() {
   return request({
     url: '/emby/batch-download-progress',
     method: 'get'
+  })
+}
+
+/**
+ * 批量下载并上传媒体项到服务器（后端队列执行）
+ */
+export function batchDownloadAndUpload(itemIds) {
+  return request({
+    url: '/emby/batch-download-and-upload',
+    method: 'post',
+    data: itemIds
   })
 }

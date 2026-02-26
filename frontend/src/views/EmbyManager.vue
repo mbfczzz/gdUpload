@@ -273,6 +273,17 @@ app:
               <el-option label="下载失败" value="failed" />
               <el-option label="未下载" value="none" />
             </el-select>
+            <el-select
+              v-model="itemTypeFilter"
+              placeholder="媒体类型"
+              style="width: 140px"
+              clearable
+              @change="applyItemTypeFilter"
+            >
+              <el-option label="全部" value="" />
+              <el-option label="电影" value="Movie" />
+              <el-option label="剧集" value="Series" />
+            </el-select>
           </div>
           <div style="display: flex; align-items: center; gap: 12px;">
             <el-button
@@ -292,6 +303,15 @@ app:
             >
               <el-icon><Download /></el-icon>
               批量直接下载
+            </el-button>
+            <el-button
+              type="success"
+              @click="handleBatchDownloadAndUpload"
+              :loading="batchDownloadUploadLoading"
+              :disabled="libraryItems.length === 0"
+            >
+              <el-icon><Upload /></el-icon>
+              批量下载并上传
             </el-button>
             <span class="total-count">共 {{ totalCount }} 项 (当前页 {{ libraryItems.length }} 项)</span>
           </div>
@@ -976,7 +996,8 @@ import {
   getCacheStatus,
   getDownloadUrls,
   downloadToServer,
-  batchDownloadToServer
+  batchDownloadToServer,
+  batchDownloadAndUpload
 } from '@/api/emby'
 import { searchSubscribe, searchByKeyword, transferToAlipan, batchValidateLinks, aiSelectBestResource } from '@/api/subscribe'
 import { createBatchTask, startTask } from '@/api/subscribeBatch'
@@ -996,6 +1017,7 @@ const loadingTags = ref(false)
 const loadingStudios = ref(false)
 const batchDownloading = ref(false) // 批量下载状态
 const batchDirectDownloading = ref(false) // 批量直接下载状态
+const batchDownloadUploadLoading = ref(false) // 批量下载并上传状态
 
 // 数据
 const serverInfo = ref(null)
@@ -1010,6 +1032,7 @@ const currentItem = ref(null)
 const searchKeyword = ref('')
 const transferStatusFilter = ref('') // 转存状态筛选
 const downloadStatusFilter = ref('') // 下载状态筛选
+const itemTypeFilter = ref('') // 媒体类型筛选
 
 // 剧集展开相关
 const expandedRows = ref([])
@@ -1307,13 +1330,14 @@ const loadLibraryItems = async () => {
   try {
     const startIndex = (currentPage.value - 1) * pageSize.value
 
-    // 传递转存状态和下载状态筛选参数到后端
+    // 传递转存状态、下载状态和媒体类型筛选参数到后端
     const res = await getLibraryItemsPaged(
       currentLibrary.value.id,
       startIndex,
       pageSize.value,
       transferStatusFilter.value || null,
-      downloadStatusFilter.value || null
+      downloadStatusFilter.value || null,
+      itemTypeFilter.value || null
     )
 
     libraryItems.value = res.data.items
@@ -1395,6 +1419,16 @@ const applyTransferFilter = () => {
 const applyDownloadFilter = () => {
   console.log('=== 应用下载状态筛选 ===')
   console.log('筛选条件:', downloadStatusFilter.value)
+
+  // 重置到第一页并重新加载数据
+  currentPage.value = 1
+  loadLibraryItems()
+}
+
+// 应用媒体类型筛选
+const applyItemTypeFilter = () => {
+  console.log('=== 应用媒体类型筛选 ===')
+  console.log('筛选条件:', itemTypeFilter.value)
 
   // 重置到第一页并重新加载数据
   currentPage.value = 1
@@ -3486,6 +3520,62 @@ const handleBatchDirectDownload = async () => {
     ElMessage.error('批量下载失败: ' + (error.message || '未知错误'))
   } finally {
     batchDirectDownloading.value = false
+  }
+}
+
+// 批量下载并上传当前页
+const handleBatchDownloadAndUpload = async () => {
+  // 过滤出电影和剧集
+  const downloadableItems = libraryItems.value.filter(
+    item => item.type === 'Movie' || item.type === 'Series'
+  )
+
+  if (downloadableItems.length === 0) {
+    ElMessage.warning('当前页没有可下载的媒体项（仅支持电影和剧集）')
+    return
+  }
+
+  // 确认操作
+  try {
+    await ElMessageBox.confirm(
+      `确定要批量下载并上传 ${downloadableItems.length} 个媒体项吗？\n\n` +
+      `下载完成一个后会立即上传到Google Drive，然后处理下一个。\n\n` +
+      `任务将在后端执行，可在"任务管理"页面查看进度。`,
+      '批量下载并上传确认',
+      {
+        confirmButtonText: '开始处理',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    return // 用户取消
+  }
+
+  batchDownloadUploadLoading.value = true
+
+  try {
+    const itemIds = downloadableItems.map(item => item.id)
+    const res = await batchDownloadAndUpload(itemIds)
+
+    if (res.data && res.data.status === 'started') {
+      const taskId = res.data.taskId
+      ElMessageBox.alert(
+        `批量下载上传任务已创建（任务ID: ${taskId}），共 ${itemIds.length} 个媒体项。\n\n下载完成一个后会立即上传，请前往"任务管理"页面查看实时进度。`,
+        '下载上传任务已启动',
+        {
+          confirmButtonText: '知道了',
+          type: 'success'
+        }
+      )
+    } else {
+      ElMessage.error('启动批量下载上传失败')
+    }
+  } catch (error) {
+    console.error('批量下载上传失败:', error)
+    ElMessage.error('批量下载上传失败: ' + (error.message || '未知错误'))
+  } finally {
+    batchDownloadUploadLoading.value = false
   }
 }
 

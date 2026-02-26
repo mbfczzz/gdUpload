@@ -527,10 +527,9 @@ public class UploadServiceImpl implements IUploadService {
                     account.getId(), account.getAccountName(), account.getStatus());
                 log.error("错误信息: {}", result.getErrorMessage());
 
-                // 记录禁用时间（移除自动解封时间）
+                // 记录禁用时间
                 LocalDateTime now = DateTimeUtil.now();
                 account.setDisabledTime(now);
-                account.setQuotaResetTime(null);  // 不再设置自动解封时间
 
                 // 禁用账号
                 Integer oldStatus = account.getStatus();
@@ -566,10 +565,9 @@ public class UploadServiceImpl implements IUploadService {
                     account.getId(), account.getAccountName(), account.getStatus());
                 log.error("错误信息: {}", result.getErrorMessage());
 
-                // 记录禁用时间（移除自动解封时间）
+                // 记录禁用时间
                 LocalDateTime now = DateTimeUtil.now();
                 account.setDisabledTime(now);
-                account.setQuotaResetTime(null);  // 不再设置自动解封时间
 
                 // 禁用账号
                 Integer oldStatus = account.getStatus();

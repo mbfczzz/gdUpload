@@ -46,5 +46,20 @@ public class EmbyProperties {
      * 是否启用Emby集成
      */
     private Boolean enabled = true;
+
+    /**
+     * Emby下载目录
+     */
+    private String downloadDir = "/data/emby";
+
+    /**
+     * 上传目录（下载并上传功能使用）
+     */
+    private String uploadDir = "/data/upload";
+
+    /**
+     * 并发下载文件数
+     */
+    private Integer concurrentDownloads = 16;
 }
 

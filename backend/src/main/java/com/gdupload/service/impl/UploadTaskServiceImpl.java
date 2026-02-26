@@ -349,6 +349,39 @@ public class UploadTaskServiceImpl extends ServiceImpl<UploadTaskMapper, UploadT
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public Long createDownloadUploadTask(String taskName, String sourcePath, String targetPath, int totalCount) {
+        UploadTask task = new UploadTask();
+        task.setTaskName(taskName);
+        task.setTaskType(5); // Emby下载上传
+        task.setSourcePath(sourcePath);
+        task.setTargetPath(targetPath);
+        task.setTotalCount(totalCount);
+        task.setUploadedCount(0);
+        task.setFailedCount(0);
+        task.setTotalSize(0L);
+        task.setUploadedSize(0L);
+        task.setProgress(0);
+        task.setStatus(1); // 直接设为运行中
+        task.setStartTime(DateTimeUtil.now());
+        task.setCreateTime(DateTimeUtil.now());
+
+        boolean saved = this.save(task);
+
+        if (saved) {
+            log.info("创建Emby下载上传任务成功: taskId={}, taskName={}, totalCount={}, targetPath={}",
+                task.getId(), taskName, totalCount, targetPath);
+
+            systemLogService.logTaskOperation(task.getId(), taskName, "TASK_CREATE",
+                String.format("创建Emby下载上传任务 - 源路径: %s, 目标路径: %s, 媒体项数: %d", sourcePath, targetPath, totalCount));
+
+            return task.getId();
+        }
+
+        return null;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public boolean updateTaskTargetPath(Long taskId, String targetPath) {
         UploadTask task = this.getById(taskId);
         if (task == null) {

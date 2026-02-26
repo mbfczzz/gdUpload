@@ -92,4 +92,15 @@ public interface IUploadTaskService extends IService<UploadTask> {
      * @return 是否成功
      */
     boolean updateTaskTargetPath(Long taskId, String targetPath);
+
+    /**
+     * 创建Emby下载上传任务
+     *
+     * @param taskName 任务名称
+     * @param sourcePath 下载并上传的源路径（上传目录）
+     * @param targetPath 上传到GD的目标路径
+     * @param totalCount 总文件数
+     * @return 任务ID
+     */
+    Long createDownloadUploadTask(String taskName, String sourcePath, String targetPath, int totalCount);
 }

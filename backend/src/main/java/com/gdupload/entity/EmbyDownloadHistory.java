@@ -33,6 +33,11 @@ public class EmbyDownloadHistory {
     private String downloadStatus;
 
     /**
+     * 任务类型：download-仅下载, download_upload-下载并上传
+     */
+    private String taskType;
+
+    /**
      * 文件路径
      */
     private String filePath;

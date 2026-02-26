@@ -559,6 +559,173 @@ public class RcloneUtil {
     }
 
     /**
+     * 列出目录内容（返回 rclone lsjson 原始 JSON 字符串）
+     *
+     * @param remoteName rclone远程配置名称
+     * @param path 目录路径（空字符串表示根目录）
+     * @return JSON字符串
+     */
+    public String listJson(String remoteName, String path) {
+        List<String> command = new ArrayList<>();
+        command.add(rclonePath);
+        command.add("lsjson");
+        String remotePath = StrUtil.isBlank(path) ? remoteName + ":" : remoteName + ":" + path;
+        command.add(remotePath);
+        command.add("--config");
+        command.add(rcloneConfigPath);
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(command);
+            Process process = pb.start();
+
+            // 单独读 stderr，避免阻塞
+            BufferedReader errReader = new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8));
+            StringBuilder errOutput = new StringBuilder();
+            Thread errThread = new Thread(() -> {
+                try {
+                    String line;
+                    while ((line = errReader.readLine()) != null) {
+                        errOutput.append(line).append("\n");
+                    }
+                } catch (IOException ignored) {}
+            });
+            errThread.start();
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+            String output = IoUtil.read(reader);
+            int exitCode = process.waitFor();
+            errThread.join(3000);
+
+            if (exitCode != 0 || StrUtil.isBlank(output)) {
+                log.error("lsjson执行失败: remoteName={}, path={}, exitCode={}, stderr={}", remoteName, path, exitCode, errOutput.toString().trim());
+                return "[]";
+            }
+            return output;
+        } catch (Exception e) {
+            log.error("列出目录内容失败: remoteName={}, path={}", remoteName, path, e);
+            return "[]";
+        }
+    }
+
+    /**
+     * 删除远程文件
+     *
+     * @param remoteName rclone远程配置名称
+     * @param filePath 文件路径
+     * @return 是否成功
+     */
+    public boolean deleteFile(String remoteName, String filePath) {
+        List<String> command = new ArrayList<>();
+        command.add(rclonePath);
+        command.add("deletefile");
+        command.add(remoteName + ":" + filePath);
+        command.add("--config");
+        command.add(rcloneConfigPath);
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            int exitCode = process.waitFor();
+            return exitCode == 0;
+        } catch (Exception e) {
+            log.error("删除文件失败: remoteName={}, filePath={}", remoteName, filePath, e);
+            return false;
+        }
+    }
+
+    /**
+     * 删除远程目录（递归）
+     *
+     * @param remoteName rclone远程配置名称
+     * @param dirPath 目录路径
+     * @return 是否成功
+     */
+    public boolean purgeDirectory(String remoteName, String dirPath) {
+        List<String> command = new ArrayList<>();
+        command.add(rclonePath);
+        command.add("purge");
+        command.add(remoteName + ":" + dirPath);
+        command.add("--config");
+        command.add(rcloneConfigPath);
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            int exitCode = process.waitFor();
+            return exitCode == 0;
+        } catch (Exception e) {
+            log.error("删除目录失败: remoteName={}, dirPath={}", remoteName, dirPath, e);
+            return false;
+        }
+    }
+
+    /**
+     * 移动/重命名文件或目录
+     *
+     * @param remoteName rclone远程配置名称
+     * @param oldPath 原路径
+     * @param newPath 新路径
+     * @param isDir 是否为目录
+     * @return 是否成功
+     */
+    public boolean moveItem(String remoteName, String oldPath, String newPath, boolean isDir) {
+        List<String> command = new ArrayList<>();
+        command.add(rclonePath);
+        if (isDir) {
+            command.add("move");
+            command.add(remoteName + ":" + oldPath);
+            command.add(remoteName + ":" + newPath + "/");
+            command.add("--delete-empty-src-dirs");
+        } else {
+            command.add("moveto");
+            command.add(remoteName + ":" + oldPath);
+            command.add(remoteName + ":" + newPath);
+        }
+        command.add("--config");
+        command.add(rcloneConfigPath);
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            int exitCode = process.waitFor();
+            return exitCode == 0;
+        } catch (Exception e) {
+            log.error("移动/重命名失败: remoteName={}, oldPath={}, newPath={}", remoteName, oldPath, newPath, e);
+            return false;
+        }
+    }
+
+    /**
+     * 创建远程目录
+     *
+     * @param remoteName rclone远程配置名称
+     * @param path 目录路径
+     * @return 是否成功
+     */
+    public boolean makeDirectory(String remoteName, String path) {
+        List<String> command = new ArrayList<>();
+        command.add(rclonePath);
+        command.add("mkdir");
+        command.add(remoteName + ":" + path);
+        command.add("--config");
+        command.add(rcloneConfigPath);
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            int exitCode = process.waitFor();
+            return exitCode == 0;
+        } catch (Exception e) {
+            log.error("创建目录失败: remoteName={}, path={}", remoteName, path, e);
+            return false;
+        }
+    }
+
+    /**
      * 重命名远程文件（使用 moveto 命令）
      *
      * @param remoteName rclone远程配置名称

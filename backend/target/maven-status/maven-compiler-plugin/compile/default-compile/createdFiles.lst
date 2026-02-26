@@ -1,6 +1,7 @@
 com\gdupload\entity\SubscribeBatchTask.class
 com\gdupload\service\impl\SubscribeBatchExecutorServiceImpl.class
 com\gdupload\controller\FileCleanupController.class
+com\gdupload\controller\GdFileManagerController$MkdirRequest.class
 com\gdupload\mapper\EmbyItemCacheMapper.class
 com\gdupload\service\impl\Resource115ServiceImpl.class
 com\gdupload\config\EmbyProperties.class
@@ -8,6 +9,8 @@ META-INF\spring-configuration-metadata.json
 com\gdupload\service\impl\SubscribeBatchTaskServiceImpl.class
 com\gdupload\mapper\SubscribeBatchLogMapper.class
 com\gdupload\service\IEmbyCacheService.class
+com\gdupload\service\IGdFileManagerService.class
+com\gdupload\controller\GdFileManagerController$MoveRequest.class
 com\gdupload\entity\EmbyTagCache.class
 com\gdupload\dto\UploadResult.class
 com\gdupload\entity\Resource115.class
@@ -31,6 +34,7 @@ com\gdupload\mapper\EmbyTagCacheMapper.class
 com\gdupload\service\IUploadTaskService.class
 com\gdupload\entity\EmbyDownloadHistory.class
 com\gdupload\mapper\SubscribeBatchTaskMapper.class
+com\gdupload\controller\GdFileManagerController$DeleteDirRequest.class
 com\gdupload\util\RcloneUtil$ProbeResult.class
 com\gdupload\entity\SmartSearchConfig.class
 com\gdupload\entity\EmbyConfig.class
@@ -75,6 +79,7 @@ com\gdupload\service\impl\TmdbServiceImpl.class
 com\gdupload\service\impl\EmbyServiceImpl.class
 com\gdupload\controller\SmartSearchConfigController.class
 com\gdupload\GdUploadManagerApplication.class
+com\gdupload\controller\GdFileManagerController.class
 com\gdupload\config\WebSocketConfig.class
 com\gdupload\service\ISubscribeBatchTaskService.class
 com\gdupload\controller\DashboardController.class
@@ -103,16 +108,20 @@ com\gdupload\mapper\UploadRecordMapper.class
 com\gdupload\util\RcloneUtil.class
 com\gdupload\dto\EmbyItem.class
 com\gdupload\config\MyMetaObjectHandler.class
+com\gdupload\controller\GdFileManagerController$DeleteFileRequest.class
 com\gdupload\common\PageResult.class
 com\gdupload\controller\TelegramSearchController.class
 com\gdupload\controller\GdAccountController.class
 com\gdupload\common\BusinessException.class
 com\gdupload\util\DbRetryUtil.class
+com\gdupload\service\impl\GdFileManagerServiceImpl.class
 com\gdupload\util\RcloneResult.class
+com\gdupload\dto\GdFileItem.class
 com\gdupload\service\impl\UploadServiceImpl.class
 com\gdupload\task\QuotaResetTask.class
 com\gdupload\service\impl\UploadTaskServiceImpl.class
 com\gdupload\service\IEmbyService.class
+com\gdupload\service\impl\GdFileManagerServiceImpl$1.class
 com\gdupload\entity\SystemLog.class
 com\gdupload\service\IAIService.class
 com\gdupload\service\ITmdbService.class

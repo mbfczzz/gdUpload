@@ -85,18 +85,18 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
         List<EmbyLibraryCache> cacheList = libraryCacheMapper.selectList(wrapper);
 
         if (cacheList.isEmpty()) {
-            log.warn("数据库中没有媒体库数据，请先执行同步操作");
-            throw new BusinessException("数据库中没有媒体库数据，请先点击\"同步所有数据\"按钮进行同步");
+            log.debug("数据库中没有媒体库数据");
+            return new ArrayList<>(); // 返回空列表，不抛异常
         }
 
         return cacheList.stream().map(this::convertToLibrary).collect(Collectors.toList());
     }
 
     @Override
-    public Map<String, Object> getLibraryItemsPaged(String libraryId, int startIndex, int limit, String transferStatus, String downloadStatus, boolean forceRefresh) {
+    public Map<String, Object> getLibraryItemsPaged(String libraryId, int startIndex, int limit, String transferStatus, String downloadStatus, String itemType, boolean forceRefresh) {
         Long configId = getCurrentEmbyConfigId();
         // 直接从数据库获取
-        log.info("从数据库获取媒体库 {} 的媒体项 (configId={}, transferStatus={}, downloadStatus={})", libraryId, configId, transferStatus, downloadStatus);
+        log.info("从数据库获取媒体库 {} 的媒体项 (configId={}, transferStatus={}, downloadStatus={}, itemType={})", libraryId, configId, transferStatus, downloadStatus, itemType);
 
         // 检查数据库是否有数据
         LambdaQueryWrapper<EmbyItemCache> countWrapper = new LambdaQueryWrapper<>();
@@ -106,21 +106,26 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
         Long cacheCount = itemCacheMapper.selectCount(countWrapper);
 
         if (cacheCount == 0) {
-            log.warn("数据库中没有媒体库 {} 的数据，请先执行同步操作", libraryId);
-            throw new BusinessException("数据库中没有该媒体库的数据，请先点击\"同步所有数据\"按钮进行同步");
+            log.debug("数据库中没有媒体库 {} 的数据", libraryId);
+            // 返回空结果，不抛异常
+            Map<String, Object> emptyResult = new HashMap<>();
+            emptyResult.put("items", new ArrayList<>());
+            emptyResult.put("totalCount", 0);
+            return emptyResult;
         }
 
-        // 根据转存状态和下载状态筛选
+        // 根据转存状态、下载状态和媒体类型筛选
         List<EmbyItem> items;
         long totalCount;
 
-        if ((transferStatus != null && !transferStatus.isEmpty()) || (downloadStatus != null && !downloadStatus.isEmpty())) {
-            // 需要根据状态筛选，使用自定义SQL
+        if ((transferStatus != null && !transferStatus.isEmpty()) || (downloadStatus != null && !downloadStatus.isEmpty()) || (itemType != null && !itemType.isEmpty())) {
+            // 需要根据状态或类型筛选，使用自定义SQL
             Map<String, Object> params = new HashMap<>();
             params.put("configId", configId);
             params.put("libraryId", libraryId);
             params.put("transferStatus", transferStatus);
             params.put("downloadStatus", downloadStatus);
+            params.put("itemType", itemType);
             params.put("offset", startIndex);
             params.put("limit", limit);
 
@@ -165,8 +170,8 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
         EmbyItemCache cache = itemCacheMapper.selectOne(wrapper);
 
         if (cache == null) {
-            log.warn("数据库中没有媒体项 {} 的数据，请先执行同步操作", itemId);
-            throw new BusinessException("数据库中没有该媒体项的数据，请先点击\"同步所有数据\"按钮进行同步");
+            log.debug("数据库中没有媒体项 {} 的数据", itemId);
+            return null; // 返回null，不抛异常
         }
 
         return convertToItem(cache);
@@ -184,8 +189,8 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
         Long cacheCount = itemCacheMapper.selectCount(countWrapper);
 
         if (cacheCount == 0) {
-            log.warn("数据库中没有媒体项数据，请先执行同步操作");
-            throw new BusinessException("数据库中没有媒体项数据，请先点击\"同步���有数据\"按钮进行同步");
+            log.debug("数据库中没有媒体项数据");
+            return new ArrayList<>(); // 返回空列表，不抛异常
         }
 
         // 使用LIKE搜索
@@ -640,8 +645,8 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
         List<EmbyGenreCache> cacheList = genreCacheMapper.selectList(wrapper);
 
         if (cacheList.isEmpty()) {
-            log.warn("数据库中没有类型数据，请先执行同步操作");
-            throw new BusinessException("数据库中没有类型数据，请先点击\"同步所有数据\"按钮进行同步");
+            log.debug("数据库中没有类型数据");
+            return new ArrayList<>(); // 返回空列表，不抛异常
         }
 
         return cacheList.stream().map(this::convertToGenre).collect(Collectors.toList());
@@ -659,8 +664,8 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
         List<EmbyTagCache> cacheList = tagCacheMapper.selectList(wrapper);
 
         if (cacheList.isEmpty()) {
-            log.warn("数据库中没有标签数据，请先执行同步操作");
-            throw new BusinessException("数据库中没有标签数据，请先点击\"同步所有数据\"按钮进行同步");
+            log.debug("数据库中没有标签数据");
+            return new ArrayList<>(); // 返回空列表，不抛异常
         }
 
         return cacheList.stream().map(this::convertToTag).collect(Collectors.toList());
@@ -678,8 +683,8 @@ public class EmbyCacheServiceImpl implements IEmbyCacheService {
         List<EmbyStudioCache> cacheList = studioCacheMapper.selectList(wrapper);
 
         if (cacheList.isEmpty()) {
-            log.warn("数据库中没有工作室数据，请先执行同步操作");
-            throw new BusinessException("数据库中没有工作室数据，请先点击\"同步所有数据\"按钮进行同步");
+            log.debug("数据库中没有工作室数据");
+            return new ArrayList<>(); // 返回空列表，不抛异常
         }
 
         return cacheList.stream().map(this::convertToStudio).collect(Collectors.toList());

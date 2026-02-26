@@ -76,6 +76,12 @@ const routes = [
     name: 'Resource115Manage',
     component: () => import('@/views/Resource115Manage.vue'),
     meta: { title: '115资源管理' }
+  },
+  {
+    path: '/gd-file-manager',
+    name: 'GdFileManager',
+    component: () => import('@/views/GdFileManager.vue'),
+    meta: { title: 'GD文件管理' }
   }
 ]
 

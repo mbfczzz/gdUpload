@@ -61,7 +61,12 @@ public interface EmbyItemCacheMapper extends BaseMapper<EmbyItemCache> {
             "</if>" +
             "WHERE e.emby_config_id = #{params.configId} " +
             "AND e.parent_id = #{params.libraryId} " +
+            "<if test='params.itemType != null and params.itemType != \"\"'>" +
+            "AND e.type = #{params.itemType} " +
+            "</if>" +
+            "<if test='params.itemType == null or params.itemType == \"\"'>" +
             "AND e.type != 'Episode' " +
+            "</if>" +
             "<if test='params.transferStatus == \"success\"'>" +
             "AND th.transfer_status = 'success' " +
             "</if>" +
@@ -130,7 +135,12 @@ public interface EmbyItemCacheMapper extends BaseMapper<EmbyItemCache> {
             "</if>" +
             "WHERE e.emby_config_id = #{params.configId} " +
             "AND e.parent_id = #{params.libraryId} " +
+            "<if test='params.itemType != null and params.itemType != \"\"'>" +
+            "AND e.type = #{params.itemType} " +
+            "</if>" +
+            "<if test='params.itemType == null or params.itemType == \"\"'>" +
             "AND e.type != 'Episode' " +
+            "</if>" +
             "<if test='params.transferStatus == \"success\"'>" +
             "AND th.transfer_status = 'success' " +
             "</if>" +

@@ -40,39 +40,14 @@ public class GdAccount implements Serializable {
     private String rcloneConfigName;
 
     /**
-     * 每日上传限制(字节) 默认750GB
-     */
-    private Long dailyLimit;
-
-    /**
-     * 已使用配额(字节)
-     */
-    private Long usedQuota;
-
-    /**
-     * 剩余配额(字节)
-     */
-    private Long remainingQuota;
-
-    /**
-     * 配额重置时间（预计解封时间）
-     */
-    private LocalDateTime quotaResetTime;
-
-    /**
-     * 禁用时间（账号被封禁的时间）
-     */
-    private LocalDateTime disabledTime;
-
-    /**
-     * 状态: 0-禁用 1-启用 2-已达上限
+     * 状态: 0-禁用 1-启用
      */
     private Integer status;
 
     /**
-     * 优先级，数字越大优先级越高
+     * 禁用时间（账号被禁用的时间）
      */
-    private Integer priority;
+    private LocalDateTime disabledTime;
 
     /**
      * 备注

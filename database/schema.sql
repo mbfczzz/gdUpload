@@ -12,20 +12,15 @@ CREATE TABLE `gd_account` (
     `account_name` VARCHAR(100) NOT NULL COMMENT '账号名称',
     `account_email` VARCHAR(100) NOT NULL COMMENT '账号邮箱',
     `rclone_config_name` VARCHAR(100) NOT NULL COMMENT 'rclone配置名称',
-    `daily_limit` BIGINT NOT NULL DEFAULT 805306368000 COMMENT '每日上传限制(字节) 默认750GB',
-    `used_quota` BIGINT NOT NULL DEFAULT 0 COMMENT '已使用配额(字节)',
-    `remaining_quota` BIGINT NOT NULL DEFAULT 805306368000 COMMENT '剩余配额(字节)',
-    `quota_reset_time` DATETIME NULL COMMENT '配额重置时间',
-    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用 2-已达上限',
-    `priority` INT NOT NULL DEFAULT 0 COMMENT '优先级，数字越大优先级越高',
+    `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态: 0-禁用 1-启用',
+    `disabled_time` DATETIME NULL COMMENT '禁用时间（账号被禁用的时间）',
     `remark` VARCHAR(500) NULL COMMENT '备注',
     `create_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `update_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_account_email` (`account_email`),
     UNIQUE KEY `uk_rclone_config_name` (`rclone_config_name`),
-    KEY `idx_status` (`status`),
-    KEY `idx_priority` (`priority`)
+    KEY `idx_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Google Drive账号表';
 
 -- 2. 上传任务表

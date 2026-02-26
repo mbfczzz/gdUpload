@@ -95,6 +95,8 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
 
         // Emby配置变量
         String embyDownloadDir = null;
+        String uploadDir = null;
+        String gdTargetPath = null;
 
         for (SmartSearchConfig config : allConfigs) {
             try {
@@ -161,6 +163,12 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
                         if (data.containsKey("embyDownloadDir")) {
                             embyDownloadDir = (String) data.get("embyDownloadDir");
                         }
+                        if (data.containsKey("uploadDir")) {
+                            uploadDir = (String) data.get("uploadDir");
+                        }
+                        if (data.containsKey("gdTargetPath")) {
+                            gdTargetPath = (String) data.get("gdTargetPath");
+                        }
                         break;
                 }
             } catch (Exception e) {
@@ -222,6 +230,12 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         // 添加Emby配置到返回结果
         if (embyDownloadDir != null) {
             fullConfig.put("embyDownloadDir", embyDownloadDir);
+        }
+        if (uploadDir != null) {
+            fullConfig.put("uploadDir", uploadDir);
+        }
+        if (gdTargetPath != null) {
+            fullConfig.put("gdTargetPath", gdTargetPath);
         }
 
         return fullConfig;
@@ -354,6 +368,12 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
             if (configData.containsKey("embyDownloadDir")) {
                 embyConfig.put("embyDownloadDir", configData.get("embyDownloadDir"));
             }
+            if (configData.containsKey("uploadDir")) {
+                embyConfig.put("uploadDir", configData.get("uploadDir"));
+            }
+            if (configData.containsKey("gdTargetPath")) {
+                embyConfig.put("gdTargetPath", configData.get("gdTargetPath"));
+            }
             if (!embyConfig.isEmpty()) {
                 SmartSearchConfig config = new SmartSearchConfig();
                 config.setUserId(userId);
@@ -361,7 +381,7 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
                 config.setConfigType("emby_config");
                 config.setConfigData(JSONUtil.toJsonStr(embyConfig));
                 config.setIsActive(true);
-                config.setRemark("Emby下载目录配置");
+                config.setRemark("Emby下载和上传目录配置");
                 configMapper.insert(config);
             }
 

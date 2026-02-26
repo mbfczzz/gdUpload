@@ -199,4 +199,13 @@ public interface IEmbyService {
      * @return 是否成功
      */
     boolean cancelDownloadTask(Long taskId);
+
+    /**
+     * 批量下载并上传媒体项（异步，顺序执行）
+     * 下载一个剧集后立即上传，然后处理下一个
+     *
+     * @param itemIds 媒体项ID列表
+     * @return 任务ID
+     */
+    Long batchDownloadAndUploadAsync(List<String> itemIds);
 }

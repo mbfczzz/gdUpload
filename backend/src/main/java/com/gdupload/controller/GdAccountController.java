@@ -63,20 +63,8 @@ public class GdAccountController {
     @PostMapping
     public Result<Void> add(@Validated @RequestBody GdAccount account) {
         // 设置默认值
-        if (account.getDailyLimit() == null) {
-            account.setDailyLimit(805306368000L); // 750GB
-        }
-        if (account.getRemainingQuota() == null) {
-            account.setRemainingQuota(account.getDailyLimit());
-        }
-        if (account.getUsedQuota() == null) {
-            account.setUsedQuota(0L);
-        }
         if (account.getStatus() == null) {
             account.setStatus(1);
-        }
-        if (account.getPriority() == null) {
-            account.setPriority(0);
         }
 
         boolean success = accountService.save(account);
@@ -84,9 +72,8 @@ public class GdAccountController {
         if (success) {
             // Log account creation
             systemLogService.logAccount(account.getId(), 1, "INFO", "ACCOUNT_CREATE",
-                String.format("创建账号 - 账号名: %s, 配置名: %s, 每日限额: %d GB",
-                    account.getAccountName(), account.getRcloneConfigName(),
-                    account.getDailyLimit() / 1024 / 1024 / 1024));
+                String.format("创建账号 - 账号名: %s, 配置名: %s",
+                    account.getAccountName(), account.getRcloneConfigName()));
         }
 
         return success ? Result.success("添加成功") : Result.error("添加失败");
@@ -160,46 +147,10 @@ public class GdAccountController {
         return success ? Result.success("操作成功") : Result.error("操作失败");
     }
 
-    @PutMapping("/{id}/reset-quota")
-    public Result<Void> resetQuota(@PathVariable Long id) {
-        GdAccount account = accountService.getById(id);
-        boolean success = accountService.resetAccountQuota(id);
-
-        if (success && account != null) {
-            // Log quota reset
-            systemLogService.logAccount(id, 1, "INFO", "ACCOUNT_QUOTA_RESET",
-                String.format("重置账号配额 - 账号名: %s, 每日限额: %d GB",
-                    account.getAccountName(), account.getDailyLimit() / 1024 / 1024 / 1024));
-        }
-
-        return success ? Result.success("重置成功") : Result.error("重置失败");
-    }
-
-    @GetMapping("/{id}/today-quota")
-    public Result<Long> getTodayQuota(@PathVariable Long id) {
-        Long usedQuota = accountService.getTodayUsedQuota(id);
-        return Result.success(usedQuota);
-    }
-
     @GetMapping("/validate-rclone")
     public Result<Boolean> validateRclone(@RequestParam String configName) {
         boolean valid = accountService.validateRcloneConfig(configName);
         return Result.success(valid);
-    }
-
-    /**
-     * 手动重置所有账号配额（用于测试或紧急情况）
-     */
-    @PostMapping("/reset-all-quota")
-    public Result<Void> resetAllQuota() {
-        try {
-            quotaResetTask.manualResetQuota();
-            systemLogService.logAccount(null, 1, "INFO", "QUOTA_RESET_ALL",
-                "手动触发所有账号配额重置");
-            return Result.success("所有账号配额已重置");
-        } catch (Exception e) {
-            return Result.error("重置失败: " + e.getMessage());
-        }
     }
 
     /**

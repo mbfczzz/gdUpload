@@ -403,6 +403,26 @@
             Emby媒体文件下载到服务器的目录路径（默认：/data/emby）
           </div>
         </el-form-item>
+
+        <el-form-item label="上传临时目录">
+          <el-input
+            v-model="config.uploadDir"
+            placeholder="/data/upload"
+          />
+          <div class="form-tip">
+            Emby下载并上传功能使用的临时目录（默认：/data/upload）
+          </div>
+        </el-form-item>
+
+        <el-form-item label="GD目标路径">
+          <el-input
+            v-model="config.gdTargetPath"
+            placeholder="/"
+          />
+          <div class="form-tip">
+            下载并上传到Google Drive的目标文件夹路径（默认：/ 表示根目录）
+          </div>
+        </el-form-item>
       </el-card>
 
       <!-- 链接验证配置 -->
@@ -603,6 +623,8 @@ const defaultConfig = {
 
   // Emby配置
   embyDownloadDir: '/data/emby',
+  uploadDir: '/data/upload',
+  gdTargetPath: '/',
 
   // 链接验证
   validateLinks: true,
