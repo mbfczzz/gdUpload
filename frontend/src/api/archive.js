@@ -48,3 +48,40 @@ export function updateRemark(id, remark) {
 export function getMediaInfo(filePath, rcloneConfigName) {
   return request.get('/archive/media-info', { params: { filePath, rcloneConfigName } })
 }
+
+// ─── 批量归档任务 ─────────────────────────────────────────────────────────────
+
+/** 启动批量归档任务 */
+export function startBatchArchive(accountId, sourcePath) {
+  return request.post('/archive/batch/start', { accountId, sourcePath })
+}
+
+/** 分页查询批量任务列表 */
+export function getBatchTasks(page = 1, size = 20) {
+  return request.get('/archive/batch/list', { params: { page, size } })
+}
+
+/** 查询单个任务（轮询进度用） */
+export function getBatchTask(id) {
+  return request.get(`/archive/batch/${id}`)
+}
+
+/** 查询任务下的归档历史 */
+export function getBatchTaskHistory(id, page = 1, size = 50, status = '') {
+  return request.get(`/archive/batch/${id}/history`, { params: { page, size, status } })
+}
+
+/** 取消批量任务 */
+export function cancelBatchTask(id) {
+  return request.delete(`/archive/batch/${id}`)
+}
+
+/** 暂停批量任务 */
+export function pauseBatchTask(id) {
+  return request.post(`/archive/batch/${id}/pause`)
+}
+
+/** 恢复批量任务 */
+export function resumeBatchTask(id) {
+  return request.post(`/archive/batch/${id}/resume`)
+}

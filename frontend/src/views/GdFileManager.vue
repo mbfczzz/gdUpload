@@ -57,7 +57,7 @@
         <div class="list-panel">
           <el-table
             v-loading="loading"
-            :data="pagedFileList"
+            :data="fileList"
             row-key="path"
             @row-click="onRowClick"
             class="file-table"
@@ -87,7 +87,7 @@
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="220" fixed="right">
+            <el-table-column label="操作" width="260" fixed="right">
               <template #default="{ row }">
                 <el-button
                   v-if="!row.isDir"
@@ -96,6 +96,13 @@
                   size="small"
                   @click.stop="openArchiveDialog(row)"
                 >归档</el-button>
+                <el-button
+                  v-if="row.isDir"
+                  type="success"
+                  link
+                  size="small"
+                  @click.stop="openBatchArchiveDialog(row)"
+                >批量归档</el-button>
                 <el-button
                   type="primary"
                   link
@@ -116,15 +123,17 @@
             <el-empty description="此目录为空" />
           </div>
 
-          <div v-if="fileList.length > pageSize" class="pagination-bar">
+          <div v-if="total > 0" class="pagination-bar">
             <el-pagination
               v-model:current-page="currentPage"
               v-model:page-size="pageSize"
               :page-sizes="[20, 50, 100, 200]"
-              :total="fileList.length"
+              :total="total"
               layout="total, sizes, prev, pager, next"
               background
               small
+              @current-change="handlePageChange"
+              @size-change="handleSizeChange"
             />
           </div>
         </div>
@@ -177,6 +186,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getAccountList } from '@/api/account'
 import { listFiles, deleteFile, deleteDir, moveItem, mkdir } from '@/api/gdFileManager'
+import { startBatchArchive } from '@/api/archive'
 import ArchiveDialog from '@/components/ArchiveDialog.vue'
 
 // ---- 账号 ----
@@ -200,6 +210,7 @@ function onAccountChange() {
   currentPath.value = ''
   fileList.value = []
   currentPage.value = 1
+  total.value = 0
   refreshList()
 }
 
@@ -218,33 +229,43 @@ function pathSegmentsUpTo(idx) {
 function navigateTo(path) {
   currentPath.value = path
   currentPage.value = 1
+  total.value = 0
   refreshList()
 }
 
-// ---- 文件列表 + 分页 ----
+// ---- 文件列表 + 服务端分页 ----
 const loading = ref(false)
 const fileList = ref([])
 const currentPage = ref(1)
 const pageSize = ref(50)
-
-const pagedFileList = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  return fileList.value.slice(start, start + pageSize.value)
-})
+const total = ref(0)
 
 async function refreshList() {
   if (!selectedAccountId.value) return
   loading.value = true
   try {
-    const res = await listFiles(selectedAccountId.value, currentPath.value)
-    fileList.value = res.data || []
-    currentPage.value = 1
+    const res = await listFiles(selectedAccountId.value, currentPath.value, currentPage.value, pageSize.value)
+    const paged = res.data || {}
+    fileList.value = paged.items || []
+    total.value = paged.totalCount || 0
   } catch (e) {
     ElMessage.error('获取文件列表失败')
     fileList.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
+}
+
+function handlePageChange(page) {
+  currentPage.value = page
+  refreshList()
+}
+
+function handleSizeChange(size) {
+  pageSize.value = size
+  currentPage.value = 1
+  refreshList()
 }
 
 function onRowClick(row) {
@@ -253,6 +274,7 @@ function onRowClick(row) {
       ? `${currentPath.value}/${row.name}`
       : row.name
     currentPage.value = 1
+    total.value = 0
     refreshList()
   }
 }
@@ -260,14 +282,22 @@ function onRowClick(row) {
 
 // ---- 删除 ----
 async function confirmDelete(row) {
-  const label = row.isDir ? '目录' : '文件'
+  const isDir = row.isDir
+  const message = isDir
+    ? `确认删除目录 "${row.name}"？\n\n⚠️ 此操作将递归删除目录内所有文件，不可撤销！`
+    : `确认删除文件 "${row.name}"？此操作不可撤销。`
   try {
     await ElMessageBox.confirm(
-      `确认删除${label} "${row.name}"？此操作不可撤销。`,
-      '删除确认',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+      message,
+      isDir ? '危险操作 - 删除目录' : '删除确认',
+      {
+        type: 'warning',
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        confirmButtonClass: isDir ? 'el-button--danger' : ''
+      }
     )
-    if (row.isDir) {
+    if (isDir) {
       await deleteDir(selectedAccountId.value, row.path)
     } else {
       await deleteFile(selectedAccountId.value, row.path)
@@ -355,7 +385,7 @@ async function confirmMkdir() {
   }
 }
 
-// ---- 归档 ----
+// ---- 归档（单文件） ----
 const archiveDialogVisible = ref(false)
 const archiveFile = ref(null)
 
@@ -371,6 +401,41 @@ function openArchiveDialog(row) {
     rcloneConfigName: account?.rcloneConfigName || ''
   }
   archiveDialogVisible.value = true
+}
+
+// ---- 批量归档（目录） ----
+async function openBatchArchiveDialog(row) {
+  const sourcePath = currentPath.value
+    ? `${currentPath.value}/${row.name}`
+    : row.name
+
+  const taskNamePreview = `批量归档_${row.name}_${new Date().toISOString().slice(0,10).replace(/-/g,'')}`
+
+  try {
+    await ElMessageBox.confirm(
+      `将对以下目录及其所有子目录中的媒体文件启动自动归档任务：\n\n` +
+      `📁 目录：${sourcePath}\n` +
+      `📋 任务名：${taskNamePreview}_HHMMSS\n\n` +
+      `系统将自动完成：文件名解析 → TMDB 匹配 → 执行归档\n` +
+      `无法自动匹配的文件会标记为"待人工处理"，可在归档管理页面查看进度。`,
+      '确认启动批量归档',
+      {
+        confirmButtonText: '启动任务',
+        cancelButtonText: '取消',
+        type: 'info',
+        dangerouslyUseHTMLString: false
+      }
+    )
+  } catch {
+    return
+  }
+
+  try {
+    const res = await startBatchArchive(selectedAccountId.value, sourcePath)
+    ElMessage.success(`批量归档任务已创建：${res.data?.taskName || taskNamePreview}，请前往归档管理查看进度`)
+  } catch (e) {
+    ElMessage.error('创建批量归档任务失败：' + (e?.message || e))
+  }
 }
 
 // ---- 工具函数 ----

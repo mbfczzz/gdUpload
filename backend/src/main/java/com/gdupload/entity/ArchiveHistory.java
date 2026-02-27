@@ -51,6 +51,9 @@ public class ArchiveHistory {
     /** 备注（人工处理时用户填写） */
     private String remark;
 
+    /** 所属批量任务ID（单文件归档时为空） */
+    private Long batchTaskId;
+
     @TableLogic
     private Integer deleted;
 

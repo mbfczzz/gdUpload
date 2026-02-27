@@ -37,4 +37,7 @@ public class ArchiveExecuteRequest {
 
     /** rclone 配置名（有值表示云盘文件，走 rclone moveto） */
     private String rcloneConfigName;
+
+    /** 所属批量任务ID（单文件归档时为 null） */
+    private Long batchTaskId;
 }

@@ -599,6 +599,7 @@ public class ArchiveServiceImpl implements IArchiveService {
         history.setCategory(req.getCategory());
         history.setSeasonDir(req.getSeasonDir());
         history.setProcessMethod(req.getProcessMethod() != null ? req.getProcessMethod() : "manual");
+        history.setBatchTaskId(req.getBatchTaskId());
 
         try {
             // 构建目标目录
@@ -614,8 +615,7 @@ public class ArchiveServiceImpl implements IArchiveService {
             history.setNewFilename(newFilename);
 
             if (notBlank(req.getRcloneConfigName())) {
-                // 云盘文件：用 rclone moveto 移动
-                // archiveTargetPath 可能有前导斜杠（如 /video2），去掉作为云盘路径
+                // 云盘文件：用 rclone moveto 移动（目标存在则覆盖）
                 String cloudTarget = targetDir.toString().replaceAll("^/+", "");
                 String remote = req.getRcloneConfigName();
                 String srcRemote  = remote + ":" + req.getOriginalPath();
@@ -623,7 +623,7 @@ public class ArchiveServiceImpl implements IArchiveService {
                 log.info("归档（云盘）: {} → {}", srcRemote, destRemote);
                 runRcloneMoveto(srcRemote, destRemote);
             } else {
-                // 本地文件：直接 Files.move
+                // 本地文件：直接 Files.move（目标存在则覆盖）
                 Files.createDirectories(Paths.get(targetDir.toString()));
                 Path src  = Paths.get(req.getOriginalPath());
                 Path dest = Paths.get(targetPath);
@@ -652,6 +652,21 @@ public class ArchiveServiceImpl implements IArchiveService {
     }
 
     private void runRcloneMoveto(String src, String dest) throws Exception {
+        // dest 格式：remote:path/to/dir/filename.mkv
+        // 先确保目标目录在 GD 上存在（moveto 不会自动创建父目录）
+        int lastSlash = dest.lastIndexOf('/');
+        if (lastSlash > 0) {
+            String destDir = dest.substring(0, lastSlash);
+            String mkdirCmd = String.format(
+                "%s mkdir --config '%s' '%s'",
+                rclonePath, rcloneConfigPath, destDir
+            );
+            Process mkdirProc = new ProcessBuilder("/bin/bash", "-c", mkdirCmd)
+                    .redirectErrorStream(true).start();
+            mkdirProc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
+            // mkdir 失败不阻断，继续尝试 moveto（目录可能已存在）
+        }
+
         String cmd = String.format(
             "%s moveto --config '%s' '%s' '%s'",
             rclonePath, rcloneConfigPath, src, dest

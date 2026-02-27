@@ -5,13 +5,16 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gdupload.common.BusinessException;
 import com.gdupload.dto.GdFileItem;
+import com.gdupload.dto.PagedResult;
 import com.gdupload.service.IGdFileManagerService;
 import com.gdupload.util.RcloneUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -26,17 +29,30 @@ public class GdFileManagerServiceImpl implements IGdFileManagerService {
     private final ObjectMapper objectMapper;
 
     @Override
-    public List<GdFileItem> listFiles(String rcloneConfigName, String path) {
+    public PagedResult<GdFileItem> listFiles(String rcloneConfigName, String path, int page, int size) {
         String json = rcloneUtil.listJson(rcloneConfigName, path);
-        if (StrUtil.isBlank(json)) {
-            return Collections.emptyList();
+        List<GdFileItem> all = Collections.emptyList();
+        if (StrUtil.isNotBlank(json)) {
+            try {
+                all = objectMapper.readValue(json, new TypeReference<List<GdFileItem>>() {});
+            } catch (Exception e) {
+                log.error("解析lsjson输出失败: configName={}, path={}", rcloneConfigName, path, e);
+                all = Collections.emptyList();
+            }
         }
-        try {
-            return objectMapper.readValue(json, new TypeReference<List<GdFileItem>>() {});
-        } catch (Exception e) {
-            log.error("解析lsjson输出失败: configName={}, path={}, json=[{}]", rcloneConfigName, path, json, e);
-            return Collections.emptyList();
-        }
+        // 目录优先，同类型按名称字母序排序（不区分大小写）
+        List<GdFileItem> sorted = new ArrayList<>(all);
+        sorted.sort(Comparator
+                .comparing((GdFileItem f) -> Boolean.TRUE.equals(f.getIsDir()) ? 0 : 1)
+                .thenComparing(f -> f.getName() == null ? "" : f.getName().toLowerCase()));
+
+        int total = sorted.size();
+        int fromIndex = (page - 1) * size;
+        int toIndex = Math.min(fromIndex + size, total);
+        List<GdFileItem> items = fromIndex < total
+                ? sorted.subList(fromIndex, toIndex)
+                : Collections.emptyList();
+        return new PagedResult<>(items, total, fromIndex, size);
     }
 
     @Override

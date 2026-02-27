@@ -3,14 +3,13 @@ package com.gdupload.controller;
 import com.gdupload.common.BusinessException;
 import com.gdupload.common.Result;
 import com.gdupload.dto.GdFileItem;
+import com.gdupload.dto.PagedResult;
 import com.gdupload.entity.GdAccount;
 import com.gdupload.service.IGdAccountService;
 import com.gdupload.service.IGdFileManagerService;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.List;
 
 /**
  * GD文件管理控制器
@@ -24,15 +23,17 @@ public class GdFileManagerController {
     private final IGdAccountService accountService;
 
     /**
-     * 列出目录内容
+     * 列出目录内容（服务端分页）
      */
     @GetMapping("/list")
-    public Result<List<GdFileItem>> list(
+    public Result<PagedResult<GdFileItem>> list(
             @RequestParam Long accountId,
-            @RequestParam(defaultValue = "") String path) {
+            @RequestParam(defaultValue = "") String path,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "50") Integer size) {
         GdAccount account = getValidAccount(accountId);
-        List<GdFileItem> files = gdFileManagerService.listFiles(account.getRcloneConfigName(), path);
-        return Result.success(files);
+        PagedResult<GdFileItem> result = gdFileManagerService.listFiles(account.getRcloneConfigName(), path, page, size);
+        return Result.success(result);
     }
 
     /**

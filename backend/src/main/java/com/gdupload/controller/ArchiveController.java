@@ -7,7 +7,9 @@ import com.gdupload.dto.ArchiveAnalyzeResult;
 import com.gdupload.dto.ArchiveExecuteRequest;
 import com.gdupload.dto.ArchiveTmdbItem;
 import com.gdupload.dto.MediaInfoDto;
+import com.gdupload.entity.ArchiveBatchTask;
 import com.gdupload.entity.ArchiveHistory;
+import com.gdupload.service.IBatchArchiveService;
 import com.gdupload.service.IArchiveService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -25,6 +27,7 @@ import java.util.Map;
 public class ArchiveController {
 
     private final IArchiveService archiveService;
+    private final IBatchArchiveService batchArchiveService;
 
     /**
      * 正则解析文件名
@@ -156,5 +159,75 @@ public class ArchiveController {
             @RequestBody Map<String, String> body) {
         archiveService.updateRemark(id, body.get("remark"));
         return Result.success("备注已更新");
+    }
+
+    // ─── 批量归档任务 ──────────────────────────────────────────────────────────
+
+    /**
+     * 启动批量归档任务
+     * 请求体：{ "accountId": 1, "sourcePath": "movies/2024" }
+     */
+    @PostMapping("/batch/start")
+    public Result<ArchiveBatchTask> startBatch(@RequestBody Map<String, Object> body) {
+        Long accountId = Long.valueOf(body.get("accountId").toString());
+        String sourcePath = (String) body.get("sourcePath");
+        return Result.success(batchArchiveService.startBatchTask(accountId, sourcePath));
+    }
+
+    /**
+     * 分页查询批量任务列表
+     */
+    @GetMapping("/batch/list")
+    public Result<IPage<ArchiveBatchTask>> listBatchTasks(
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "20") Integer size) {
+        return Result.success(batchArchiveService.listTasks(new Page<>(page, size)));
+    }
+
+    /**
+     * 查询单个批量任务（含最新进度）
+     */
+    @GetMapping("/batch/{id}")
+    public Result<ArchiveBatchTask> getBatchTask(@PathVariable Long id) {
+        return Result.success(batchArchiveService.getTask(id));
+    }
+
+    /**
+     * 查询批量任务下的归档历史
+     */
+    @GetMapping("/batch/{id}/history")
+    public Result<IPage<ArchiveHistory>> getBatchTaskHistory(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "1") Integer page,
+            @RequestParam(defaultValue = "50") Integer size,
+            @RequestParam(required = false) String status) {
+        return Result.success(batchArchiveService.getTaskHistory(id, new Page<>(page, size), status));
+    }
+
+    /**
+     * 取消批量任务
+     */
+    @DeleteMapping("/batch/{id}")
+    public Result<String> cancelBatchTask(@PathVariable Long id) {
+        batchArchiveService.cancelTask(id);
+        return Result.success("任务已取消");
+    }
+
+    /**
+     * 暂停批量任务（RUNNING → PAUSED，下一个文件处理前生效）
+     */
+    @PostMapping("/batch/{id}/pause")
+    public Result<String> pauseBatchTask(@PathVariable Long id) {
+        batchArchiveService.pauseTask(id);
+        return Result.success("任务已暂停");
+    }
+
+    /**
+     * 恢复已暂停的批量任务（PAUSED → RUNNING）
+     */
+    @PostMapping("/batch/{id}/resume")
+    public Result<String> resumeBatchTask(@PathVariable Long id) {
+        batchArchiveService.resumeTask(id);
+        return Result.success("任务已恢复");
     }
 }

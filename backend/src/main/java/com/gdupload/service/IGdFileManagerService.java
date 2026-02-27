@@ -1,8 +1,7 @@
 package com.gdupload.service;
 
 import com.gdupload.dto.GdFileItem;
-
-import java.util.List;
+import com.gdupload.dto.PagedResult;
 
 /**
  * GD文件管理服务接口
@@ -10,13 +9,15 @@ import java.util.List;
 public interface IGdFileManagerService {
 
     /**
-     * 列出目录内容
+     * 列出目录内容（服务端分页，目录优先按名称排序）
      *
      * @param rcloneConfigName rclone配置名称
      * @param path 目录路径（空字符串表示根目录）
-     * @return 文件/目录列表
+     * @param page 页码（从1开始）
+     * @param size 每页条数
+     * @return 分页结果
      */
-    List<GdFileItem> listFiles(String rcloneConfigName, String path);
+    PagedResult<GdFileItem> listFiles(String rcloneConfigName, String path, int page, int size);
 
     /**
      * 删除文件

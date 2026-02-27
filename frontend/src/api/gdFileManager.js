@@ -4,12 +4,12 @@ import request from '@/utils/request'
  * GD文件管理API
  */
 
-// 列出目录内容
-export function listFiles(accountId, path = '') {
+// 列出目录内容（服务端分页）
+export function listFiles(accountId, path = '', page = 1, size = 50) {
   return request({
     url: '/gd-file/list',
     method: 'get',
-    params: { accountId, path }
+    params: { accountId, path, page, size }
   })
 }
 

@@ -608,6 +608,58 @@ public class RcloneUtil {
     }
 
     /**
+     * 递归列出目录内所有文件（只含文件，不含目录），返回 rclone lsjson 原始 JSON 字符串
+     *
+     * @param remoteName rclone远程配置名称
+     * @param path 目录路径（空字符串表示根目录）
+     * @return JSON字符串，元素 Path 相对于 path 参数
+     */
+    public String listJsonRecursive(String remoteName, String path) {
+        List<String> command = new ArrayList<>();
+        command.add(rclonePath);
+        command.add("lsjson");
+        String remotePath = StrUtil.isBlank(path) ? remoteName + ":" : remoteName + ":" + path;
+        command.add(remotePath);
+        command.add("--recursive");
+        command.add("--files-only");
+        command.add("--fast-list");
+        command.add("--config");
+        command.add(rcloneConfigPath);
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(command);
+            Process process = pb.start();
+
+            BufferedReader errReader = new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8));
+            StringBuilder errOutput = new StringBuilder();
+            Thread errThread = new Thread(() -> {
+                try {
+                    String line;
+                    while ((line = errReader.readLine()) != null) {
+                        errOutput.append(line).append("\n");
+                    }
+                } catch (IOException ignored) {}
+            });
+            errThread.start();
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+            String output = IoUtil.read(reader);
+            int exitCode = process.waitFor();
+            errThread.join(3000);
+
+            if (exitCode != 0) {
+                log.error("lsjson recursive 失败: remoteName={}, path={}, exitCode={}, stderr={}",
+                        remoteName, path, exitCode, errOutput.toString().trim());
+                return "[]";
+            }
+            return StrUtil.isBlank(output) ? "[]" : output;
+        } catch (Exception e) {
+            log.error("递归列出目录失败: remoteName={}, path={}", remoteName, path, e);
+            return "[]";
+        }
+    }
+
+    /**
      * 删除远程文件
      *
      * @param remoteName rclone远程配置名称
@@ -676,7 +728,7 @@ public class RcloneUtil {
         if (isDir) {
             command.add("move");
             command.add(remoteName + ":" + oldPath);
-            command.add(remoteName + ":" + newPath + "/");
+            command.add(remoteName + ":" + newPath);
             command.add("--delete-empty-src-dirs");
         } else {
             command.add("moveto");
