@@ -34,4 +34,7 @@ public class ArchiveExecuteRequest {
 
     /** 关联的 file_info ID（可选） */
     private Long fileInfoId;
+
+    /** rclone 配置名（有值表示云盘文件，走 rclone moveto） */
+    private String rcloneConfigName;
 }

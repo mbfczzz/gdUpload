@@ -27,8 +27,16 @@
           <span>
             <el-icon><Edit /></el-icon> 文件信息
           </span>
-          <el-tag v-if="parseInfo.analyzeSource === 'ai'" type="warning" size="small">AI识别</el-tag>
-          <el-tag v-else type="info" size="small">正则解析</el-tag>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <el-tag v-if="techLoading" type="warning" size="small">
+              <el-icon class="rotating"><Loading /></el-icon> AI补充中...
+            </el-tag>
+            <el-tag v-else-if="parseInfo.analyzeSource === 'ai'" type="warning" size="small">AI识别</el-tag>
+            <el-tag v-else type="info" size="small">正则解析</el-tag>
+            <el-button size="small" type="warning" plain :loading="techLoading" @click="runAiAnalyze">
+              AI解析
+            </el-button>
+          </div>
         </div>
       </template>
 
@@ -237,18 +245,12 @@
           <el-col :span="8">
             <el-form-item label="媒体分类">
               <el-select v-model="archiveConfig.category" placeholder="请选择分类" filterable>
-                <el-option-group
-                  v-for="group in categoryGroups"
-                  :key="group.label"
-                  :label="group.label"
-                >
-                  <el-option
-                    v-for="cat in group.children"
-                    :key="cat"
-                    :label="cat"
-                    :value="cat"
-                  />
-                </el-option-group>
+                <el-option
+                  v-for="cat in categories"
+                  :key="cat"
+                  :label="cat"
+                  :value="cat"
+                />
               </el-select>
             </el-form-item>
           </el-col>
@@ -328,7 +330,8 @@ import {
   aiAnalyzeFilename,
   searchTmdb,
   executeArchive,
-  markManual
+  markManual,
+  getMediaInfo
 } from '@/api/archive'
 
 // ─── Props / Emits ────────────────────────────────────────────────────────────
@@ -368,6 +371,7 @@ const parseInfo = reactive({
 
 const tmdbLoading   = ref(false)
 const aiAnalyzing   = ref(false)
+const techLoading   = ref(false)
 const tmdbSearched  = ref(false)
 const tmdbResults   = ref([])
 const selectedTmdb  = ref(null)
@@ -399,11 +403,10 @@ const seasonOptions = computed(() => {
   return opts
 })
 
-const categoryGroups = [
-  { label: '动漫', children: ['日语动漫', '国产动漫', '韩国动漫', '欧美动漫', '其他动漫'] },
-  { label: '电视剧', children: ['国产剧', '港台剧', '日剧', '韩剧', '欧美剧', '其他剧集'] },
-  { label: '电影', children: ['华语电影', '日本电影', '韩国电影', '欧美电影', '其他电影'] },
-  { label: '其他', children: ['纪录片', '国内综艺', '日韩综艺', '欧美综艺', '其他'] }
+const categories = [
+  '动画电影', '动画剧集', '儿童剧集', '国产动漫', '国产剧集',
+  '日韩剧集', '华语电影', '纪录片', '欧美剧集', '外语电影',
+  '其他剧集', '综艺', '合集', '演唱会'
 ]
 
 // ─── 计算属性 ─────────────────────────────────────────────────────────────────
@@ -421,13 +424,9 @@ const computedFilename = computed(() => {
     name += ` (${r.year})`
   }
 
-  const codecs = [r.resolution, r.videoCodec, r.audioCodec].filter(Boolean)
-  if (codecs.length) {
-    // resolution 单独空格，其余点连接
-    name += ` ${r.resolution || ''}`
-    const codecStr = [r.videoCodec, r.audioCodec].filter(Boolean).join('.')
-    if (codecStr) name += `.${codecStr}`
-  }
+  if (r.resolution) name += ` ${r.resolution}`
+  const codecStr = [r.videoCodec, r.audioCodec].filter(Boolean).join('.')
+  if (codecStr) name += ` ${codecStr}`
   if (r.subtitleGroup) name += `-${r.subtitleGroup}`
 
   const ext = parseInfo.originalFilename?.split('.').pop()?.toLowerCase()
@@ -482,10 +481,8 @@ async function initDialog() {
   Object.assign(archiveConfig, { category: '', dirName: '', seasonDir: '' })
   Object.assign(manualTmdb, { tmdbId: '', title: '', year: '' })
 
-  // 1. 解析文件名
+  // 1. 正则解析文件名
   try {
-    // request.js 拦截器已处理非200情况并直接返回 Result 对象
-    // const { data } 解构出的是 Result.data 字段（即实际业务数据）
     const { data } = await analyzeFilename(props.file.fileName)
     if (data) {
       applyParseResult(data)
@@ -495,6 +492,14 @@ async function initDialog() {
     console.warn('文件名解析失败', e)
   }
 
+  // 1b. ffprobe 探测真实媒体信息（优先于 AI，只对本地文件有效）
+  await tryFfprobe()
+
+  // 1c. 技术字段仍全空时，自动静默调 AI 补充（字幕组不走AI，手动填）
+  if (!parseInfo.resolution && !parseInfo.videoCodec && !parseInfo.audioCodec) {
+    autoFillTechByAi()
+  }
+
   // 2. 自动发起 TMDB 搜索
   if (parseInfo.title) {
     tmdbSearchTitle.value = parseInfo.title
@@ -502,6 +507,63 @@ async function initDialog() {
     tmdbSearchType.value  = parseInfo.mediaType === 'movie' ? 'movie' : 'tv'
     await doTmdbSearch()
   }
+}
+
+/** ffprobe 探测真实媒体信息（本地文件直接探测，云端文件走 rclone 管道） */
+async function tryFfprobe() {
+  if (!props.file?.filePath) return
+  techLoading.value = true
+  try {
+    const { data } = await getMediaInfo(props.file.filePath, props.file.rcloneConfigName || '')
+    if (!data) {
+      console.warn('ffprobe 未返回媒体信息（ffprobe未安装或文件无法读取）')
+      return
+    }
+    let filled = false
+    if (data.resolution) { parseInfo.resolution = data.resolution; filled = true }
+    if (data.videoCodec) { parseInfo.videoCodec = data.videoCodec; filled = true }
+    if (data.audioCodec) { parseInfo.audioCodec = data.audioCodec; filled = true }
+    if (filled) ElMessage.success('已通过ffprobe自动检测媒体信息')
+  } catch (e) {
+    console.warn('ffprobe 调用失败:', e)
+  } finally {
+    techLoading.value = false
+  }
+}
+
+/** 静默 AI 补充技术字段（不覆盖已有值） */
+async function autoFillTechByAi() {
+  techLoading.value = true
+  try {
+    const { data } = await aiAnalyzeFilename(props.file.fileName)
+    if (data) applyTechFields(data)
+  } catch { /* 静默失败 */ } finally {
+    techLoading.value = false
+  }
+}
+
+/** 手动触发 AI 全字段解析（覆盖所有字段） */
+async function runAiAnalyze() {
+  techLoading.value = true
+  try {
+    const { data } = await aiAnalyzeFilename(props.file.fileName)
+    if (data) {
+      applyParseResult(data)
+      ElMessage.success('AI解析完成')
+    }
+  } catch (e) {
+    ElMessage.error('AI解析失败: ' + (e?.message || e))
+  } finally {
+    techLoading.value = false
+  }
+}
+
+/** 只应用技术字段（不覆盖 title/season/episode，字幕组不走AI） */
+function applyTechFields(result) {
+  if (result.resolution) parseInfo.resolution = result.resolution
+  if (result.videoCodec) parseInfo.videoCodec = result.videoCodec
+  if (result.audioCodec) parseInfo.audioCodec = result.audioCodec
+  if (result.year && !parseInfo.year) parseInfo.year = result.year
 }
 
 function applyParseResult(result) {
@@ -636,16 +698,17 @@ async function handleExecute() {
   try {
     const tmdb = selectedTmdb.value
     const req = {
-      originalPath:  props.file.filePath,
-      newFilename:   computedFilename.value,
-      category:      archiveConfig.category,
-      dirName:       archiveConfig.dirName,
-      seasonDir:     parseInfo.mediaType === 'tv' ? archiveConfig.seasonDir : '',
-      tmdbId:        tmdb?.tmdbId?.toString() || manualTmdb.tmdbId || '',
-      tmdbTitle:     tmdb?.title || manualTmdb.title || '',
-      processMethod: parseInfo.analyzeSource === 'ai'
-                       ? 'ai'
-                       : (tmdb ? 'tmdb' : 'manual')
+      originalPath:      props.file.filePath,
+      newFilename:       computedFilename.value,
+      category:          archiveConfig.category,
+      dirName:           archiveConfig.dirName,
+      seasonDir:         parseInfo.mediaType === 'tv' ? archiveConfig.seasonDir : '',
+      tmdbId:            tmdb?.tmdbId?.toString() || manualTmdb.tmdbId || '',
+      tmdbTitle:         tmdb?.title || manualTmdb.title || '',
+      processMethod:     parseInfo.analyzeSource === 'ai'
+                           ? 'ai'
+                           : (tmdb ? 'tmdb' : 'manual'),
+      rcloneConfigName:  props.file.rcloneConfigName || ''
     }
 
     const { data } = await executeArchive(req)

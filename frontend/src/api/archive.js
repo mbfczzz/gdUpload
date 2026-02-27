@@ -43,3 +43,8 @@ export function getArchiveHistory(page = 1, size = 20, status = '') {
 export function updateRemark(id, remark) {
   return request.put(`/archive/history/${id}/remark`, { remark })
 }
+
+/** 用 ffprobe 探测媒体信息（rcloneConfigName 有值时走 rclone 管道读云端文件） */
+export function getMediaInfo(filePath, rcloneConfigName) {
+  return request.get('/archive/media-info', { params: { filePath, rcloneConfigName } })
+}

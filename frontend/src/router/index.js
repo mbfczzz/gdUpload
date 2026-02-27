@@ -82,6 +82,12 @@ const routes = [
     name: 'GdFileManager',
     component: () => import('@/views/GdFileManager.vue'),
     meta: { title: 'GD文件管理' }
+  },
+  {
+    path: '/archive',
+    name: 'Archive',
+    component: () => import('@/views/Archive.vue'),
+    meta: { title: '归档管理' }
   }
 ]
 

@@ -107,6 +107,7 @@ com\gdupload\controller\EmbyController.class
 com\gdupload\dto\EmbyLibrary.class
 com\gdupload\entity\UploadRecord.class
 com\gdupload\controller\Resource115ManageController.class
+com\gdupload\dto\MediaInfoDto.class
 com\gdupload\mapper\EmbyStudioCacheMapper.class
 com\gdupload\service\IEmbyConfigService.class
 com\gdupload\controller\FileController.class

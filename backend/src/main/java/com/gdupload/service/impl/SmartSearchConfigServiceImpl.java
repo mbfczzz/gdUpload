@@ -80,6 +80,14 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         Integer validationTimeout = null;
         Boolean debugMode = null;
 
+        // AI扩展配置变量
+        String aiProvider = null;
+        String aiApiKey = null;
+        String aiApiUrl = null;
+        String aiModel = null;
+        Object aiMaxTokens = null;
+        Object aiTemperature = null;
+
         // TMDB配置变量
         Boolean tmdbEnabled = null;
         String tmdbApiKey = null;
@@ -112,6 +120,24 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
                         }
                         if (data.containsKey("validateLinks")) {
                             validateLinks = (Boolean) data.get("validateLinks");
+                        }
+                        if (data.containsKey("aiProvider")) {
+                            aiProvider = (String) data.get("aiProvider");
+                        }
+                        if (data.containsKey("aiApiKey")) {
+                            aiApiKey = (String) data.get("aiApiKey");
+                        }
+                        if (data.containsKey("aiApiUrl")) {
+                            aiApiUrl = (String) data.get("aiApiUrl");
+                        }
+                        if (data.containsKey("aiModel")) {
+                            aiModel = (String) data.get("aiModel");
+                        }
+                        if (data.containsKey("aiMaxTokens")) {
+                            aiMaxTokens = data.get("aiMaxTokens");
+                        }
+                        if (data.containsKey("aiTemperature")) {
+                            aiTemperature = data.get("aiTemperature");
                         }
                         break;
                     case "search_config":
@@ -185,6 +211,24 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         }
         if (validateLinks != null) {
             fullConfig.put("validateLinks", validateLinks);
+        }
+        if (aiProvider != null) {
+            fullConfig.put("aiProvider", aiProvider);
+        }
+        if (aiApiKey != null) {
+            fullConfig.put("aiApiKey", aiApiKey);
+        }
+        if (aiApiUrl != null) {
+            fullConfig.put("aiApiUrl", aiApiUrl);
+        }
+        if (aiModel != null) {
+            fullConfig.put("aiModel", aiModel);
+        }
+        if (aiMaxTokens != null) {
+            fullConfig.put("aiMaxTokens", aiMaxTokens);
+        }
+        if (aiTemperature != null) {
+            fullConfig.put("aiTemperature", aiTemperature);
         }
         if (maxValidationCount != null) {
             fullConfig.put("maxValidationCount", maxValidationCount);
@@ -273,6 +317,24 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
             }
             if (configData.containsKey("validateLinks")) {
                 aiConfig.put("validateLinks", configData.get("validateLinks"));
+            }
+            if (configData.containsKey("aiProvider")) {
+                aiConfig.put("aiProvider", configData.get("aiProvider"));
+            }
+            if (configData.containsKey("aiApiKey")) {
+                aiConfig.put("aiApiKey", configData.get("aiApiKey"));
+            }
+            if (configData.containsKey("aiApiUrl")) {
+                aiConfig.put("aiApiUrl", configData.get("aiApiUrl"));
+            }
+            if (configData.containsKey("aiModel")) {
+                aiConfig.put("aiModel", configData.get("aiModel"));
+            }
+            if (configData.containsKey("aiMaxTokens")) {
+                aiConfig.put("aiMaxTokens", configData.get("aiMaxTokens"));
+            }
+            if (configData.containsKey("aiTemperature")) {
+                aiConfig.put("aiTemperature", configData.get("aiTemperature"));
             }
             if (!aiConfig.isEmpty()) {
                 SmartSearchConfig config = new SmartSearchConfig();

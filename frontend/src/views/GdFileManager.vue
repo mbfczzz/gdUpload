@@ -53,28 +53,13 @@
     <!-- 主体 -->
     <el-card class="content-card">
       <div class="content-layout">
-        <!-- 左侧目录树 -->
-        <div class="tree-panel">
-          <div class="tree-header">目录树</div>
-          <el-tree
-            ref="treeRef"
-            :props="treeProps"
-            :load="loadTreeNode"
-            lazy
-            node-key="path"
-            highlight-current
-            class="dir-tree"
-            @node-click="onTreeNodeClick"
-          />
-        </div>
-
-        <!-- 右侧文件列表 -->
+        <!-- 文件列表 -->
         <div class="list-panel">
           <el-table
             v-loading="loading"
             :data="pagedFileList"
             row-key="path"
-            @row-dblclick="onRowDblClick"
+            @row-click="onRowClick"
             class="file-table"
           >
             <el-table-column label="名称" min-width="280">
@@ -102,8 +87,15 @@
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="160" fixed="right">
+            <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
+                <el-button
+                  v-if="!row.isDir"
+                  type="warning"
+                  link
+                  size="small"
+                  @click.stop="openArchiveDialog(row)"
+                >归档</el-button>
                 <el-button
                   type="primary"
                   link
@@ -171,6 +163,12 @@
         <el-button type="primary" :loading="mkdirLoading" @click="confirmMkdir">创建</el-button>
       </template>
     </el-dialog>
+
+    <!-- 归档弹窗 -->
+    <ArchiveDialog
+      v-model="archiveDialogVisible"
+      :file="archiveFile"
+    />
   </div>
 </template>
 
@@ -179,6 +177,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getAccountList } from '@/api/account'
 import { listFiles, deleteFile, deleteDir, moveItem, mkdir } from '@/api/gdFileManager'
+import ArchiveDialog from '@/components/ArchiveDialog.vue'
 
 // ---- 账号 ----
 const accounts = ref([])
@@ -248,39 +247,16 @@ async function refreshList() {
   }
 }
 
-function onRowDblClick(row) {
+function onRowClick(row) {
   if (row.isDir) {
-    currentPath.value = row.path
+    currentPath.value = currentPath.value
+      ? `${currentPath.value}/${row.name}`
+      : row.name
     currentPage.value = 1
     refreshList()
   }
 }
 
-// ---- 目录树 ----
-const treeRef = ref(null)
-const treeProps = {
-  label: 'name',
-  children: 'children',
-  isLeaf: (data) => !data.isDir
-}
-
-async function loadTreeNode(node, resolve) {
-  if (!selectedAccountId.value) return resolve([])
-  const path = node.level === 0 ? '' : node.data.path
-  try {
-    const res = await listFiles(selectedAccountId.value, path)
-    const dirs = (res.data || []).filter(f => f.isDir)
-    resolve(dirs)
-  } catch {
-    resolve([])
-  }
-}
-
-function onTreeNodeClick(data) {
-  currentPath.value = data.path
-  currentPage.value = 1
-  refreshList()
-}
 
 // ---- 删除 ----
 async function confirmDelete(row) {
@@ -379,6 +355,24 @@ async function confirmMkdir() {
   }
 }
 
+// ---- 归档 ----
+const archiveDialogVisible = ref(false)
+const archiveFile = ref(null)
+
+function openArchiveDialog(row) {
+  const fullPath = currentPath.value
+    ? `${currentPath.value}/${row.name}`
+    : row.name
+  const account = accounts.value.find(a => a.id === selectedAccountId.value)
+  archiveFile.value = {
+    fileName: row.name,
+    filePath: fullPath,
+    fileSize: row.size,
+    rcloneConfigName: account?.rcloneConfigName || ''
+  }
+  archiveDialogVisible.value = true
+}
+
 // ---- 工具函数 ----
 function formatSize(bytes) {
   if (bytes == null || bytes < 0) return '—'
@@ -450,32 +444,6 @@ onMounted(loadAccounts)
   display: flex;
   height: calc(100vh - 260px);
   min-height: 400px;
-}
-
-.tree-panel {
-  width: 260px;
-  flex-shrink: 0;
-  border-right: 1px solid #e5e5e7;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-
-.tree-header {
-  padding: 12px 16px;
-  font-weight: 600;
-  font-size: 13px;
-  color: #86868b;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-bottom: 1px solid #f5f5f7;
-  background: #fafafa;
-}
-
-.dir-tree {
-  flex: 1;
-  padding: 8px;
-  background: transparent;
 }
 
 .list-panel {

@@ -10,6 +10,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.gdupload.dto.ArchiveAnalyzeResult;
 import com.gdupload.dto.ArchiveExecuteRequest;
 import com.gdupload.dto.ArchiveTmdbItem;
+import com.gdupload.dto.MediaInfoDto;
 import com.gdupload.entity.ArchiveHistory;
 import com.gdupload.mapper.ArchiveHistoryMapper;
 import com.gdupload.service.IArchiveService;
@@ -53,6 +54,12 @@ public class ArchiveServiceImpl implements IArchiveService {
 
     @Value("${app.ai.enabled:false}")
     private boolean aiEnabled;
+
+    @Value("${app.rclone.path:/usr/bin/rclone}")
+    private String rclonePath;
+
+    @Value("${app.rclone.config-path:/root/.config/rclone/rclone.conf}")
+    private String rcloneConfigPath;
 
     // ─── TMDB ────────────────────────────────────────────────────────────────
 
@@ -204,27 +211,67 @@ public class ArchiveServiceImpl implements IArchiveService {
         return raw.toUpperCase();
     }
 
+    /** 已知技术/语言标签（大写，去除空格和分隔符后匹配） */
+    private static final java.util.Set<String> TECH_TAGS = new java.util.HashSet<>(java.util.Arrays.asList(
+            // 分辨率
+            "4K","2160P","1080P","1080I","720P","480P","576P","360P",
+            // 视频编码
+            "HEVC","H265","H264","X265","X264","AVC","AV1","VP9","VP8","MPEG2",
+            // 音频编码
+            "AAC","AC3","EAC3","DTS","DTSHD","DTSHDMA","FLAC","MP3","TRUEHD","OPUS","VORBIS",
+            // 片源
+            "BD","BDRIP","BLURAY","WEBRIP","WEBDL","WEB","HDTV","DVDRIP","DVD",
+            // 流媒体
+            "NF","AMZN","DSNP","ATVP","HULU","HBO","APPLE",
+            // HDR
+            "SDR","HDR","HDR10","DOLBY","DV","DOLBYVISION",
+            // 语言/字幕语言标签（不是字幕组）
+            "CHT","CHS","JPN","ENG","KOR","BIG5","GB","UTF8",
+            "SUB","DUB","DUBBED","SUBBED","MULTI","MULTILANG"
+    ));
+
+    private boolean isTechTag(String s) {
+        if (s == null || s.isEmpty()) return true;
+        if (s.matches("\\d+"))           return true;  // 纯数字（集数等）
+        if (s.matches("\\d+[xX]\\d+"))  return true;  // 分辨率 1920x1080
+        if (s.matches("(19|20)\\d{2}")) return true;  // 年份
+        // 去掉空格/点/横线后查表
+        String normalized = s.toUpperCase().replaceAll("[\\s._\\-]", "");
+        return TECH_TAGS.contains(normalized);
+    }
+
     private String extractSubtitleGroup(String filename, ArchiveAnalyzeResult r) {
         // 去掉扩展名
         String base = filename;
         int dotIdx = base.lastIndexOf('.');
         if (dotIdx > 0) base = base.substring(0, dotIdx);
 
-        // 最后一个 - 后面的内容（若不是技术标签）
+        // 策略1：文件名开头的方括号 — 动漫最常见格式
+        // [ANi] 剧名 - 01 [1080p][HEVC][AAC].mkv → ANi
+        Matcher firstBm = Pattern.compile("^\\s*\\[([^\\]]+)\\]").matcher(base);
+        if (firstBm.find()) {
+            String candidate = firstBm.group(1).trim();
+            if (!isTechTag(candidate)) {
+                return candidate;
+            }
+        }
+
+        // 策略2：最后一个 - 后面的内容
+        // 剧名.S01E01.1080p.HEVC-SubGroup.mkv → SubGroup
         int lastHyphen = base.lastIndexOf('-');
         if (lastHyphen > 0) {
             String after = base.substring(lastHyphen + 1).trim();
-            if (!after.isEmpty() && !after.matches("(?i)(\\d+|[A-Z0-9]{1,6}|\\d+[pPiI]|\\d+x\\d+)")) {
+            if (!after.isEmpty() && !isTechTag(after)) {
                 return after;
             }
         }
 
-        // 方括号中最后一项（若不是技术标签）
+        // 策略3：最后一个方括号（非技术标签）
+        // 剧名 第01集 [桜都字幕组].mkv → 桜都字幕组
         Matcher bm = BRACKET_PATTERN.matcher(base);
         String lastBracket = null;
         while (bm.find()) lastBracket = bm.group(1);
-        if (lastBracket != null
-                && !lastBracket.matches("(?i)(\\d+[pPiI]?|\\d+x\\d+|HEVC|AVC|H\\.?26[45]|x26[45]|AAC|FLAC|DTS.*|\\d{4})")) {
+        if (lastBracket != null && !isTechTag(lastBracket)) {
             return lastBracket;
         }
 
@@ -283,9 +330,14 @@ public class ArchiveServiceImpl implements IArchiveService {
             return fallback;
         }
 
+        String provider = getEffectiveAiProvider();
+        String model = getEffectiveAiModel();
+        String apiUrl = getEffectiveAiApiUrl(provider);
         String prompt = buildAiPrompt(filename);
         try {
-            String aiJson = callClaudeApi(key, prompt);
+            String aiJson = "openai".equals(provider)
+                    ? callOpenAiApi(key, model, apiUrl, prompt)
+                    : callClaudeApi(key, model, prompt);
             ArchiveAnalyzeResult result = parseAiJson(filename, aiJson);
             result.setAnalyzeSource("ai");
             result.setSuggestedFilename(buildFilename(result));
@@ -317,9 +369,9 @@ public class ArchiveServiceImpl implements IArchiveService {
                 "只返回JSON对象，不要包含任何其他内容或说明。";
     }
 
-    private String callClaudeApi(String apiKey, String prompt) {
+    private String callClaudeApi(String apiKey, String model, String prompt) {
         JSONObject body = new JSONObject();
-        body.set("model", aiModel);
+        body.set("model", model);
         body.set("max_tokens", 512);
         JSONArray messages = new JSONArray();
         JSONObject userMsg = new JSONObject();
@@ -343,6 +395,40 @@ public class ArchiveServiceImpl implements IArchiveService {
             return content.getJSONObject(0).getStr("text");
         }
         throw new RuntimeException("Claude API返回内容为空");
+    }
+
+    private String callOpenAiApi(String apiKey, String model, String baseUrl, String prompt) {
+        JSONObject body = new JSONObject();
+        body.set("model", model);
+        body.set("max_tokens", 512);
+        JSONArray messages = new JSONArray();
+        JSONObject userMsg = new JSONObject();
+        userMsg.set("role", "user");
+        userMsg.set("content", prompt);
+        messages.add(userMsg);
+        body.set("messages", messages);
+
+        String endpoint = (baseUrl != null ? baseUrl : "https://api.openai.com") + "/v1/chat/completions";
+        log.info("调用OpenAI接口: {}, model: {}", endpoint, model);
+        String response = HttpRequest.post(endpoint)
+                .header("Authorization", "Bearer " + apiKey)
+                .header("content-type", "application/json")
+                .body(body.toString())
+                .timeout(30000)
+                .execute()
+                .body();
+
+        log.info("OpenAI API原始响应: {}", response);
+        JSONObject resp = JSONUtil.parseObj(response);
+        // 优先检查错误
+        if (resp.containsKey("error")) {
+            throw new RuntimeException("OpenAI API错误: " + resp.getJSONObject("error").getStr("message"));
+        }
+        JSONArray choices = resp.getJSONArray("choices");
+        if (choices != null && !choices.isEmpty()) {
+            return choices.getJSONObject(0).getJSONObject("message").getStr("content");
+        }
+        throw new RuntimeException("OpenAI API返回内容为空，完整响应: " + response);
     }
 
     private ArchiveAnalyzeResult parseAiJson(String originalFilename, String aiJson) {
@@ -389,31 +475,41 @@ public class ArchiveServiceImpl implements IArchiveService {
             return Collections.emptyList();
         }
 
-        String searchType = "movie".equals(type) ? "movie" : "tv";
+        String primaryType = "movie".equals(type) ? "movie" : "tv";
+        String fallbackType = "movie".equals(primaryType) ? "tv" : "movie";
 
         try {
-            String url = String.format(TMDB_SEARCH_URL, searchType, apiKey,
-                    java.net.URLEncoder.encode(title.trim(), "UTF-8"), language);
-            if (year != null && !year.isEmpty()) {
-                url += "&year=" + year;
+            List<ArchiveTmdbItem> items = doTmdbSearch(title, year, primaryType, apiKey, language);
+            if (!items.isEmpty()) {
+                return items;
             }
-
-            String body = HttpRequest.get(url).timeout(15000).execute().body();
-            JSONObject json = JSONUtil.parseObj(body);
-            JSONArray results = json.getJSONArray("results");
-
-            List<ArchiveTmdbItem> items = new ArrayList<>();
-            if (results != null) {
-                int limit = Math.min(results.size(), 8);
-                for (int i = 0; i < limit; i++) {
-                    items.add(buildTmdbItem(results.getJSONObject(i), searchType));
-                }
-            }
-            return items;
+            // 主类型没结果，自动换另一种类型重试
+            log.info("TMDB搜索[{}]无结果，自动用[{}]重试: {}", primaryType, fallbackType, title);
+            return doTmdbSearch(title, year, fallbackType, apiKey, language);
         } catch (Exception e) {
             log.error("TMDB搜索失败: title={}, error={}", title, e.getMessage());
             return Collections.emptyList();
         }
+    }
+
+    private List<ArchiveTmdbItem> doTmdbSearch(String title, String year, String searchType,
+                                                String apiKey, String language) throws Exception {
+        String url = String.format(TMDB_SEARCH_URL, searchType, apiKey,
+                java.net.URLEncoder.encode(title.trim(), "UTF-8"), language);
+        if (year != null && !year.isEmpty()) {
+            url += "&year=" + year;
+        }
+        String body = HttpRequest.get(url).timeout(15000).execute().body();
+        JSONObject json = JSONUtil.parseObj(body);
+        JSONArray results = json.getJSONArray("results");
+        List<ArchiveTmdbItem> items = new ArrayList<>();
+        if (results != null) {
+            int limit = Math.min(results.size(), 8);
+            for (int i = 0; i < limit; i++) {
+                items.add(buildTmdbItem(results.getJSONObject(i), searchType));
+            }
+        }
+        return items;
     }
 
     private ArchiveTmdbItem buildTmdbItem(JSONObject r, String type) {
@@ -465,36 +561,25 @@ public class ArchiveServiceImpl implements IArchiveService {
      * 16=动画, 99=纪录片, 10764=真人秀, 10767=脱口秀
      */
     private String suggestCategory(String type, String lang, List<Integer> genreIds) {
-        boolean isAnimation = genreIds != null && genreIds.contains(16);
+        boolean isAnimation  = genreIds != null && genreIds.contains(16);
         boolean isDocumentary = genreIds != null && genreIds.contains(99);
-        boolean isVariety = genreIds != null
+        boolean isVariety    = genreIds != null
                 && (genreIds.contains(10764) || genreIds.contains(10767));
 
         if (isDocumentary) return "纪录片";
+        if (isVariety)     return "综艺";
 
         if (isAnimation) {
-            if ("ja".equals(lang)) return "日语动漫";
-            if ("zh".equals(lang) || "cn".equals(lang)) return "国产动漫";
-            if ("ko".equals(lang)) return "韩国动漫";
-            return "欧美动漫";
+            return "movie".equals(type) ? "动画电影" : "动画剧集";
         }
 
         if ("movie".equals(type)) {
             if ("zh".equals(lang) || "cn".equals(lang)) return "华语电影";
-            if ("ja".equals(lang)) return "日本电影";
-            if ("ko".equals(lang)) return "韩国电影";
-            if ("en".equals(lang)) return "欧美电影";
-            return "其他电影";
+            return "外语电影";
         } else {
-            if (isVariety) {
-                if ("zh".equals(lang)) return "国内综艺";
-                if ("ja".equals(lang) || "ko".equals(lang)) return "日韩综艺";
-                return "欧美综艺";
-            }
-            if ("zh".equals(lang)) return "国产剧";
-            if ("ja".equals(lang)) return "日剧";
-            if ("ko".equals(lang)) return "韩剧";
-            if ("en".equals(lang)) return "欧美剧";
+            if ("zh".equals(lang) || "cn".equals(lang)) return "国产剧集";
+            if ("ja".equals(lang) || "ko".equals(lang)) return "日韩剧集";
+            if ("en".equals(lang)) return "欧美剧集";
             return "其他剧集";
         }
     }
@@ -528,13 +613,22 @@ public class ArchiveServiceImpl implements IArchiveService {
             history.setNewPath(targetPath);
             history.setNewFilename(newFilename);
 
-            // 创建目录
-            Files.createDirectories(Paths.get(targetDir.toString()));
-
-            // 移动并重命名文件
-            Path src  = Paths.get(req.getOriginalPath());
-            Path dest = Paths.get(targetPath);
-            Files.move(src, dest, StandardCopyOption.REPLACE_EXISTING);
+            if (notBlank(req.getRcloneConfigName())) {
+                // 云盘文件：用 rclone moveto 移动
+                // archiveTargetPath 可能有前导斜杠（如 /video2），去掉作为云盘路径
+                String cloudTarget = targetDir.toString().replaceAll("^/+", "");
+                String remote = req.getRcloneConfigName();
+                String srcRemote  = remote + ":" + req.getOriginalPath();
+                String destRemote = remote + ":" + cloudTarget + "/" + newFilename;
+                log.info("归档（云盘）: {} → {}", srcRemote, destRemote);
+                runRcloneMoveto(srcRemote, destRemote);
+            } else {
+                // 本地文件：直接 Files.move
+                Files.createDirectories(Paths.get(targetDir.toString()));
+                Path src  = Paths.get(req.getOriginalPath());
+                Path dest = Paths.get(targetPath);
+                Files.move(src, dest, StandardCopyOption.REPLACE_EXISTING);
+            }
 
             log.info("归档成功: {} → {}", req.getOriginalPath(), targetPath);
             history.setStatus("success");
@@ -555,6 +649,26 @@ public class ArchiveServiceImpl implements IArchiveService {
         archiveHistoryMapper.insert(history);
         result.put("historyId", history.getId());
         return result;
+    }
+
+    private void runRcloneMoveto(String src, String dest) throws Exception {
+        String cmd = String.format(
+            "%s moveto --config '%s' '%s' '%s'",
+            rclonePath, rcloneConfigPath, src, dest
+        );
+        ProcessBuilder pb = new ProcessBuilder("/bin/bash", "-c", cmd);
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+        String output = readOutput(process);
+        boolean finished = process.waitFor(120, java.util.concurrent.TimeUnit.SECONDS);
+        if (!finished) {
+            process.destroyForcibly();
+            throw new RuntimeException("rclone moveto 超时");
+        }
+        int exitCode = process.exitValue();
+        if (exitCode != 0) {
+            throw new RuntimeException("rclone moveto 失败(exit=" + exitCode + "): " + output);
+        }
     }
 
     // ─── 标记人工处理 ─────────────────────────────────────────────────────────
@@ -582,14 +696,9 @@ public class ArchiveServiceImpl implements IArchiveService {
     @Override
     public List<String> getCategories() {
         return Arrays.asList(
-                // 动漫
-                "日语动漫", "国产动漫", "韩国动漫", "欧美动漫", "其他动漫",
-                // 电视剧
-                "国产剧", "港台剧", "日剧", "韩剧", "欧美剧", "其他剧集",
-                // 电影
-                "华语电影", "日本电影", "韩国电影", "欧美电影", "其他电影",
-                // 其他
-                "纪录片", "国内综艺", "日韩综艺", "欧美综艺", "其他"
+                "动画电影", "动画剧集", "儿童剧集", "国产动漫", "国产剧集",
+                "日韩剧集", "华语电影", "纪录片", "欧美剧集", "外语电影",
+                "其他剧集", "综艺", "合集", "演唱会"
         );
     }
 
@@ -614,6 +723,167 @@ public class ArchiveServiceImpl implements IArchiveService {
         }
     }
 
+    // ─── ffprobe 媒体信息 ──────────────────────────────────────────────────────
+
+    @Override
+    public MediaInfoDto getMediaInfo(String filePath, String rcloneConfigName) {
+        if (filePath == null || filePath.trim().isEmpty()) return null;
+        log.info("getMediaInfo: filePath={}, rcloneConfigName={}", filePath, rcloneConfigName);
+
+        MediaInfoDto result;
+        if (rcloneConfigName != null && !rcloneConfigName.trim().isEmpty()) {
+            result = getMediaInfoViaRclone(rcloneConfigName, filePath);
+        } else {
+            result = getMediaInfoLocal(filePath);
+        }
+
+        if (result != null) {
+            log.info("getMediaInfo 成功: resolution={}, videoCodec={}, audioCodec={}", result.getResolution(), result.getVideoCodec(), result.getAudioCodec());
+        } else {
+            log.warn("getMediaInfo 返回空（ffprobe未安装或文件无法读取）: filePath={}", filePath);
+        }
+        return result;
+    }
+
+    /** 本地文件：直接运行 ffprobe */
+    private MediaInfoDto getMediaInfoLocal(String filePath) {
+        java.io.File file = new java.io.File(filePath);
+        if (!file.exists() || !file.isFile()) {
+            log.warn("getMediaInfo: 本地文件不存在 {}", filePath);
+            return null;
+        }
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                "ffprobe", "-v", "quiet",
+                "-print_format", "json", "-show_streams",
+                filePath
+            );
+            pb.redirectErrorStream(false);
+            Process process = pb.start();
+            String json = readOutput(process);
+            process.waitFor();
+            return json.isEmpty() ? null : parseMediaInfo(json);
+        } catch (Exception e) {
+            log.warn("ffprobe 本地执行失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 云端文件：rclone cat | head -c 15MB | ffprobe
+     * 读取文件头部 15MB，足以拿到 MKV/MP4(faststart) 的编解码信息
+     */
+    private MediaInfoDto getMediaInfoViaRclone(String configName, String cloudPath) {
+        try {
+            // bash -c 方式串联管道
+            String cmd = String.format(
+                "%s cat --config '%s' '%s:%s' 2>/dev/null | head -c 15728640 | " +
+                "ffprobe -v quiet -print_format json -show_streams " +
+                "-probesize 15728640 -analyzeduration 0 -i pipe:0 2>/dev/null",
+                rclonePath, rcloneConfigPath, configName, cloudPath
+            );
+            ProcessBuilder pb = new ProcessBuilder("/bin/bash", "-c", cmd);
+            pb.redirectErrorStream(false);
+            Process process = pb.start();
+            String json = readOutput(process);
+            process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
+            if (process.isAlive()) process.destroyForcibly();
+            return json.isEmpty() ? null : parseMediaInfo(json);
+        } catch (Exception e) {
+            log.warn("ffprobe via rclone 失败: configName={}, path={}, err={}", configName, cloudPath, e.getMessage());
+            return null;
+        }
+    }
+
+    private String readOutput(Process process) throws Exception {
+        java.io.BufferedReader reader = new java.io.BufferedReader(
+            new java.io.InputStreamReader(process.getInputStream(), java.nio.charset.StandardCharsets.UTF_8)
+        );
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = reader.readLine()) != null) sb.append(line);
+        return sb.toString().trim();
+    }
+
+    private MediaInfoDto parseMediaInfo(String json) {
+        try {
+            JSONObject root = JSONUtil.parseObj(json);
+            JSONArray streams = root.getJSONArray("streams");
+            if (streams == null || streams.isEmpty()) return null;
+
+            MediaInfoDto dto = new MediaInfoDto();
+
+            for (int i = 0; i < streams.size(); i++) {
+                JSONObject stream = streams.getJSONObject(i);
+                String codecType = stream.getStr("codec_type");
+                String codecName = stream.getStr("codec_name", "");
+
+                if ("video".equals(codecType) && dto.getVideoCodec() == null) {
+                    dto.setVideoCodec(normalizeVideoCodecName(codecName));
+                    Integer w = stream.getInt("width");
+                    Integer h = stream.getInt("height");
+                    if (w != null && h != null) {
+                        dto.setWidth(w);
+                        dto.setHeight(h);
+                        dto.setResolution(widthToResolution(w));
+                    }
+                }
+                if ("audio".equals(codecType) && dto.getAudioCodec() == null) {
+                    dto.setAudioCodec(normalizeAudioCodecName(codecName, stream));
+                }
+            }
+
+            return (dto.getVideoCodec() != null || dto.getAudioCodec() != null) ? dto : null;
+        } catch (Exception e) {
+            log.error("解析 ffprobe JSON 失败", e);
+            return null;
+        }
+    }
+
+    private String normalizeVideoCodecName(String raw) {
+        if (raw == null) return null;
+        switch (raw.toLowerCase()) {
+            case "hevc": return "HEVC";
+            case "h264": return "AVC";
+            case "av1":  return "AV1";
+            case "vp9":  return "VP9";
+            case "vp8":  return "VP8";
+            case "mpeg2video": return "MPEG-2";
+            default: return raw.toUpperCase();
+        }
+    }
+
+    private String normalizeAudioCodecName(String raw, JSONObject stream) {
+        if (raw == null) return null;
+        switch (raw.toLowerCase()) {
+            case "aac":    return "AAC";
+            case "ac3":    return "AC3";
+            case "eac3":   return "EAC3";
+            case "truehd": return "TrueHD";
+            case "flac":   return "FLAC";
+            case "mp3":    return "MP3";
+            case "opus":   return "Opus";
+            case "dts": {
+                // DTS 子类型通过 profile 区分
+                String profile = stream.getStr("profile", "");
+                if (profile.contains("MA")) return "DTS-HD-MA";
+                if (profile.contains("HRA")) return "DTS-HD";
+                return "DTS";
+            }
+            case "vorbis": return "Vorbis";
+            default: return raw.toUpperCase();
+        }
+    }
+
+    private String widthToResolution(int width) {
+        if (width >= 3840) return "4K";
+        if (width >= 1920) return "1080p";
+        if (width >= 1280) return "720p";
+        if (width >= 854)  return "480p";
+        if (width >= 640)  return "360p";
+        return width + "p";
+    }
+
     // ─── 内部工具 ─────────────────────────────────────────────────────────────
 
     private String getEffectiveTmdbApiKey() {
@@ -636,6 +906,43 @@ public class ArchiveServiceImpl implements IArchiveService {
             }
         } catch (Exception ignored) {}
         return aiApiKey;
+    }
+
+    private String getEffectiveAiProvider() {
+        try {
+            Map<String, Object> cfg = smartSearchConfigService.getFullConfig("default");
+            if (cfg != null && cfg.containsKey("aiProvider")) {
+                String provider = (String) cfg.get("aiProvider");
+                if (provider != null && !provider.isEmpty()) return provider;
+            }
+        } catch (Exception ignored) {}
+        return "claude"; // 默认 Claude
+    }
+
+    private String getEffectiveAiModel() {
+        try {
+            Map<String, Object> cfg = smartSearchConfigService.getFullConfig("default");
+            if (cfg != null && cfg.containsKey("aiModel")) {
+                String model = (String) cfg.get("aiModel");
+                if (model != null && !model.isEmpty()) return model;
+            }
+        } catch (Exception ignored) {}
+        return aiModel;
+    }
+
+    private String getEffectiveAiApiUrl(String provider) {
+        try {
+            Map<String, Object> cfg = smartSearchConfigService.getFullConfig("default");
+            if (cfg != null && cfg.containsKey("aiApiUrl")) {
+                String url = (String) cfg.get("aiApiUrl");
+                if (url != null && !url.trim().isEmpty()) {
+                    // 去掉末尾斜杠
+                    return url.trim().replaceAll("/+$", "");
+                }
+            }
+        } catch (Exception ignored) {}
+        // 默认地址
+        return "openai".equals(provider) ? "https://api.openai.com" : null;
     }
 
     private String getTmdbLanguage() {

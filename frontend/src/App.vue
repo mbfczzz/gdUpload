@@ -25,6 +25,10 @@
             <el-icon class="menu-icon"><FolderOpened /></el-icon>
             <span>GD文件管理</span>
           </el-menu-item>
+          <el-menu-item index="/archive" class="menu-item">
+            <el-icon class="menu-icon"><FolderChecked /></el-icon>
+            <span>归档管理</span>
+          </el-menu-item>
           <el-menu-item index="/task" class="menu-item">
             <el-icon class="menu-icon"><List /></el-icon>
             <span>任务管理</span>
@@ -116,7 +120,8 @@ const currentPageTitle = computed(() => {
     '/emby-config': 'Emby配置',
     '/smart-search-config': '智能搜索配置',
     '/resource115': '115资源管理',
-    '/gd-file-manager': 'GD文件管理'
+    '/gd-file-manager': 'GD文件管理',
+    '/archive': '归档管理'
   }
   return titles[route.path] || '首页'
 })

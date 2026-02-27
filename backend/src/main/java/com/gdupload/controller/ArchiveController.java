@@ -6,6 +6,7 @@ import com.gdupload.common.Result;
 import com.gdupload.dto.ArchiveAnalyzeResult;
 import com.gdupload.dto.ArchiveExecuteRequest;
 import com.gdupload.dto.ArchiveTmdbItem;
+import com.gdupload.dto.MediaInfoDto;
 import com.gdupload.entity.ArchiveHistory;
 import com.gdupload.service.IArchiveService;
 import lombok.RequiredArgsConstructor;
@@ -82,6 +83,47 @@ public class ArchiveController {
         String originalFilename = body.get("originalFilename");
         String remark = body.get("remark");
         return Result.success(archiveService.markManual(originalPath, originalFilename, remark));
+    }
+
+    /**
+     * 用 ffprobe 探测本地文件的真实媒体技术信息
+     * 返回 null 表示文件不存在或 ffprobe 未安装
+     */
+    @GetMapping("/media-info")
+    public Result<MediaInfoDto> getMediaInfo(
+            @RequestParam String filePath,
+            @RequestParam(required = false) String rcloneConfigName) {
+        return Result.success(archiveService.getMediaInfo(filePath, rcloneConfigName));
+    }
+
+    /**
+     * 检查 ffprobe / rclone 是否可用
+     */
+    @GetMapping("/check-tools")
+    public Result<Map<String, Object>> checkTools() {
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("ffprobe", runVersionCheck("ffprobe", "-version"));
+        result.put("rclone",  runVersionCheck("rclone",  "version"));
+        return Result.success(result);
+    }
+
+    private Map<String, Object> runVersionCheck(String tool, String arg) {
+        Map<String, Object> info = new java.util.LinkedHashMap<>();
+        try {
+            Process p = new ProcessBuilder(tool, arg)
+                    .redirectErrorStream(true)
+                    .start();
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(p.getInputStream()));
+            String firstLine = br.readLine();
+            p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
+            info.put("available", true);
+            info.put("version", firstLine != null ? firstLine.trim() : "");
+        } catch (Exception e) {
+            info.put("available", false);
+            info.put("error", e.getMessage());
+        }
+        return info;
     }
 
     /**

@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.gdupload.dto.ArchiveAnalyzeResult;
 import com.gdupload.dto.ArchiveExecuteRequest;
 import com.gdupload.dto.ArchiveTmdbItem;
+import com.gdupload.dto.MediaInfoDto;
 import com.gdupload.entity.ArchiveHistory;
 
 import java.util.List;
@@ -24,6 +25,14 @@ public interface IArchiveService {
      * 用 AI 分析文件名（正则无法解析时的回退方案）
      */
     ArchiveAnalyzeResult aiAnalyzeFilename(String filename);
+
+    /**
+     * 用 ffprobe 探测媒体文件的真实技术信息（视频编码、音频编码、分辨率）
+     * - rcloneConfigName 为空：直接对本地路径运行 ffprobe
+     * - rcloneConfigName 非空：通过 rclone cat | ffprobe 读云端文件头
+     * 失败时返回 null
+     */
+    MediaInfoDto getMediaInfo(String filePath, String rcloneConfigName);
 
     /**
      * 搜索 TMDB，返回最多5条候选结果

@@ -203,9 +203,15 @@
             </div>
           </el-form-item>
 
-          <el-form-item label="API地址" v-if="config.aiProvider === 'ollama'">
-            <el-input v-model="config.aiApiUrl" placeholder="http://localhost:11434" />
-            <div class="form-tip">Ollama服务的API地址</div>
+          <el-form-item label="API地址">
+            <el-input
+              v-model="config.aiApiUrl"
+              :placeholder="config.aiProvider === 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com（留空使用默认）'"
+            />
+            <div class="form-tip">
+              <span v-if="config.aiProvider === 'ollama'">Ollama服务的API地址</span>
+              <span v-else>代理或自定义API地址，留空则使用官方默认地址</span>
+            </div>
           </el-form-item>
 
           <el-form-item label="模型选择">
@@ -602,7 +608,7 @@ const defaultConfig = {
   // AI配置
   aiEnabled: false,
   aiProvider: 'claude',
-  apiKey: '',
+  aiApiKey: '',
   aiApiUrl: 'http://localhost:11434',
   aiModel: 'claude-3-5-sonnet-20241022',
   aiMaxTokens: 1024,
