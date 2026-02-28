@@ -108,6 +108,19 @@ public class ArchiveServiceImpl implements IArchiveService {
     private static final Pattern BRACKET_PATTERN =
             Pattern.compile("\\[([^\\]]+)\\]");
 
+    /**
+     * 日本AV番号：2-5个字母 + 连字符 + 3-5位数字，如 ABCD-1234、FC2-PPV-1234567
+     * 覆盖绝大多数正规番号格式
+     */
+    private static final Pattern AV_CODE_PATTERN =
+            Pattern.compile("(?i)\\b([A-Z]{2,5})-?(PPV-)?\\d{3,6}\\b");
+
+    /** 成人内容关键词 */
+    private static final Pattern ADULT_KEYWORD_PATTERN =
+            Pattern.compile("(?i)\\b(xxx|r18|jav|hentai|uncensored|uncen|无码|無碼|有码|有碼" +
+                    "|中文字幕.*av|av.*中文|fc2|素人|巨乳|美乳|痴女|人妻|熟女|lez|lesbian|" +
+                    "porn|adult|18only|nsfw|nude|naked|sex(?!y)|creampie|blowjob)\\b");
+
     // ─── 文件名解析 ───────────────────────────────────────────────────────────
 
     @Override
@@ -201,7 +214,27 @@ public class ArchiveServiceImpl implements IArchiveService {
         // 8. 生成建议文件名
         result.setSuggestedFilename(buildFilename(result));
 
+        // 成人内容正则检测
+        result.setIsAdult(detectAdultByFilename(filename));
+
         return result;
+    }
+
+    /**
+     * 通过文件名检测是否疑似成人内容
+     * 第一层：日本AV番号格式 + 成人关键词
+     */
+    private boolean detectAdultByFilename(String filename) {
+        if (filename == null) return false;
+        // 关键词直接命中
+        if (ADULT_KEYWORD_PATTERN.matcher(filename).find()) return true;
+        // AV番号：需要同时排除正常剧集编号（如 S01E01 格式已被 SE_PATTERN 识别）
+        // 只有文件名里没有普通剧集标志时，AV番号匹配才有效
+        boolean hasNormalEpisode = SE_PATTERN.matcher(filename).find()
+                || CN_EP_PATTERN.matcher(filename).find()
+                || JP_EP_PATTERN.matcher(filename).find();
+        if (!hasNormalEpisode && AV_CODE_PATTERN.matcher(filename).find()) return true;
+        return false;
     }
 
     private String normalizeVideoCodec(String raw) {
@@ -364,7 +397,8 @@ public class ArchiveServiceImpl implements IArchiveService {
                 "  \"audioCodec\": \"音频编码（AAC/DTS/FLAC等），无则null\",\n" +
                 "  \"subtitleGroup\": \"字幕组名称，无则null\",\n" +
                 "  \"mediaType\": \"tv 或 movie\",\n" +
-                "  \"year\": \"年份四位数字字符串，无则null\"\n" +
+                "  \"year\": \"年份四位数字字符串，无则null\",\n" +
+                "  \"isAdult\": \"是否为成人/色情内容，true 或 false（根据番号格式、关键词等判断）\"\n" +
                 "}\n\n" +
                 "只返回JSON对象，不要包含任何其他内容或说明。";
     }
@@ -452,6 +486,9 @@ public class ArchiveServiceImpl implements IArchiveService {
         result.setSubtitleGroup(obj.getStr("subtitleGroup"));
         result.setMediaType(obj.getStr("mediaType"));
         result.setYear(obj.getStr("year"));
+        // AI 判断成人内容（若正则已判为 true 则保留，否则取 AI 结果）
+        Boolean aiAdult = obj.getBool("isAdult");
+        if (Boolean.TRUE.equals(aiAdult)) result.setIsAdult(true);
 
         // 从原始文件名补充扩展名
         Matcher extM = EXT_PATTERN.matcher(originalFilename);
@@ -540,6 +577,9 @@ public class ArchiveServiceImpl implements IArchiveService {
             for (int i = 0; i < genreIds.size(); i++) genres.add(genreIds.getInt(i));
             item.setGenreIds(genres);
         }
+
+        // TMDB 成人内容标记
+        item.setIsAdult(Boolean.TRUE.equals(r.getBool("adult")));
 
         // 建议分类
         item.setSuggestedCategory(suggestCategory(type, item.getOriginalLanguage(), item.getGenreIds()));
@@ -652,28 +692,22 @@ public class ArchiveServiceImpl implements IArchiveService {
     }
 
     private void runRcloneMoveto(String src, String dest) throws Exception {
-        // dest 格式：remote:path/to/dir/filename.mkv
-        // 先确保目标目录在 GD 上存在（moveto 不会自动创建父目录）
+        // 先确保目标目录存在（moveto 不会自动创建父目录）
         int lastSlash = dest.lastIndexOf('/');
         if (lastSlash > 0) {
             String destDir = dest.substring(0, lastSlash);
-            String mkdirCmd = String.format(
-                "%s mkdir --config '%s' '%s'",
-                rclonePath, rcloneConfigPath, destDir
-            );
-            Process mkdirProc = new ProcessBuilder("/bin/bash", "-c", mkdirCmd)
+            // 直接传参数列表，不经过 shell，路径中的特殊字符不影响
+            Process mkdirProc = new ProcessBuilder(
+                    rclonePath, "mkdir", "--config", rcloneConfigPath, destDir)
                     .redirectErrorStream(true).start();
             mkdirProc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
-            // mkdir 失败不阻断，继续尝试 moveto（目录可能已存在）
+            // mkdir 失败不阻断（目录可能已存在）
         }
 
-        String cmd = String.format(
-            "%s moveto --config '%s' '%s' '%s'",
-            rclonePath, rcloneConfigPath, src, dest
-        );
-        ProcessBuilder pb = new ProcessBuilder("/bin/bash", "-c", cmd);
-        pb.redirectErrorStream(true);
-        Process process = pb.start();
+        // 同样直接传参数列表，彻底避免 shell 特殊字符（单引号、括号、空格等）问题
+        Process process = new ProcessBuilder(
+                rclonePath, "moveto", "--config", rcloneConfigPath, src, dest)
+                .redirectErrorStream(true).start();
         String output = readOutput(process);
         boolean finished = process.waitFor(120, java.util.concurrent.TimeUnit.SECONDS);
         if (!finished) {
@@ -776,7 +810,8 @@ public class ArchiveServiceImpl implements IArchiveService {
             pb.redirectErrorStream(false);
             Process process = pb.start();
             String json = readOutput(process);
-            process.waitFor();
+            boolean finished = process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
+            if (!finished) process.destroyForcibly();
             return json.isEmpty() ? null : parseMediaInfo(json);
         } catch (Exception e) {
             log.warn("ffprobe 本地执行失败: {}", e.getMessage());
@@ -790,12 +825,14 @@ public class ArchiveServiceImpl implements IArchiveService {
      */
     private MediaInfoDto getMediaInfoViaRclone(String configName, String cloudPath) {
         try {
-            // bash -c 方式串联管道
+            // bash 管道无法避免，对路径中的单引号做转义：' → '\''
+            String escapedConfig  = rcloneConfigPath.replace("'", "'\\''");
+            String escapedPath    = cloudPath.replace("'", "'\\''");
             String cmd = String.format(
                 "%s cat --config '%s' '%s:%s' 2>/dev/null | head -c 15728640 | " +
                 "ffprobe -v quiet -print_format json -show_streams " +
                 "-probesize 15728640 -analyzeduration 0 -i pipe:0 2>/dev/null",
-                rclonePath, rcloneConfigPath, configName, cloudPath
+                rclonePath, escapedConfig, configName, escapedPath
             );
             ProcessBuilder pb = new ProcessBuilder("/bin/bash", "-c", cmd);
             pb.redirectErrorStream(false);
@@ -811,13 +848,13 @@ public class ArchiveServiceImpl implements IArchiveService {
     }
 
     private String readOutput(Process process) throws Exception {
-        java.io.BufferedReader reader = new java.io.BufferedReader(
-            new java.io.InputStreamReader(process.getInputStream(), java.nio.charset.StandardCharsets.UTF_8)
-        );
-        StringBuilder sb = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) sb.append(line);
-        return sb.toString().trim();
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(process.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) sb.append(line);
+            return sb.toString().trim();
+        }
     }
 
     private MediaInfoDto parseMediaInfo(String json) {

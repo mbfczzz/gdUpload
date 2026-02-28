@@ -42,4 +42,7 @@ public class ArchiveTmdbItem {
 
     /** 建议目录名（如 "名侦探柯南-1996-[tmdbid=30984]"） */
     private String suggestedDirName;
+
+    /** TMDB 标记为成人内容 */
+    private Boolean isAdult;
 }

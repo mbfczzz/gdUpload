@@ -559,6 +559,54 @@
           </span>
         </el-form-item>
       </el-card>
+      <!-- STRM 生成配置 -->
+      <el-card class="config-section">
+        <template #header>
+          <div class="section-header">
+            <el-icon><VideoCamera /></el-icon>
+            <span>STRM 生成配置</span>
+          </div>
+        </template>
+
+        <el-alert
+          type="info"
+          :closable="false"
+          style="margin-bottom: 16px;"
+        >
+          <div style="font-size: 13px; line-height: 1.7;">
+            配置后可在「GD文件管理」对任意目录点击「生成STRM」，系统将：
+            <ol style="margin: 4px 0 0; padding-left: 18px;">
+              <li>扫描 GD 目录所有视频文件</li>
+              <li>解析文件名 + TMDB 刮削元数据</li>
+              <li>在本地输出路径生成 .strm + .nfo + 封面图（Emby 可直接加载）</li>
+            </ol>
+            <br/>STRM 内容格式：<code>播放URL前缀 / GD源目录 / 文件相对路径</code>
+          </div>
+        </el-alert>
+
+        <el-form-item label="本地输出路径">
+          <el-input v-model="config.strmOutputPath" placeholder="/media/strm" />
+          <div class="form-tip">STRM 文件及元数据写入的本地目录（Emby 媒体库应指向此路径）</div>
+        </el-form-item>
+
+        <el-form-item label="GD 远程名称">
+          <el-input v-model="config.strmGdRemote" placeholder="media2" />
+          <div class="form-tip">rclone 配置中 Google Drive 的远程名称，用于从SmartSearchConfig直接触发扫描</div>
+        </el-form-item>
+
+        <el-form-item label="GD 源目录">
+          <el-input v-model="config.strmGdPath" placeholder="video/" />
+          <div class="form-tip">GD 中要扫描的目录路径（相对于远程根）；从文件管理器触发时会用当前目录覆盖</div>
+        </el-form-item>
+
+        <el-form-item label="播放 URL 前缀">
+          <el-input v-model="config.strmPlayUrlBase" placeholder="http://192.168.1.100:8080" />
+          <div class="form-tip">
+            rclone serve HTTP 的访问地址（或其他能直接播放 GD 文件的服务地址）。
+            示例：<code>rclone serve http media2: --addr :8080</code>
+          </div>
+        </el-form-item>
+      </el-card>
     </el-form>
 
     <!-- 导入配置文件输入 -->
@@ -631,6 +679,12 @@ const defaultConfig = {
   embyDownloadDir: '/data/emby',
   uploadDir: '/data/upload',
   gdTargetPath: '/',
+
+  // STRM配置
+  strmOutputPath:  '',
+  strmGdRemote:    '',
+  strmGdPath:      '',
+  strmPlayUrlBase: '',
 
   // 链接验证
   validateLinks: true,

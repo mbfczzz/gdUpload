@@ -13,6 +13,28 @@
       <span class="filename-text" :title="file?.filePath">{{ file?.fileName }}</span>
     </div>
 
+    <!-- 成人内容警告 -->
+    <el-alert
+      v-if="isAdultDetected"
+      type="error"
+      :closable="false"
+      show-icon
+      style="margin-bottom: 12px"
+    >
+      <template #title>
+        ⚠️ 检测到疑似成人内容
+        <el-tag
+          v-if="adultSource"
+          size="small"
+          type="danger"
+          style="margin-left: 8px"
+        >{{ adultSource }}</el-tag>
+      </template>
+      <span style="font-size: 12px; color: #f56c6c">
+        请确认内容性质，必要时手动调整分类或标记人工处理。
+      </span>
+    </el-alert>
+
     <!-- 流程状态条 -->
     <el-steps :active="flowStep" simple class="flow-steps">
       <el-step title="解析文件名" :icon="getStepIcon(0)" />
@@ -390,6 +412,10 @@ const archiveConfig = reactive({
 
 const executing = ref(false)
 
+// ─── 成人内容检测 ──────────────────────────────────────────────────────────────
+const isAdultDetected = ref(false)
+const adultSource = ref('')   // 'filename' | 'TMDB' | 'AI'
+
 // ─── 选项数据 ─────────────────────────────────────────────────────────────────
 
 const resolutions  = ['4K', '1080p', '720p', '480p']
@@ -480,6 +506,8 @@ async function initDialog() {
   })
   Object.assign(archiveConfig, { category: '', dirName: '', seasonDir: '' })
   Object.assign(manualTmdb, { tmdbId: '', title: '', year: '' })
+  isAdultDetected.value = false
+  adultSource.value = ''
 
   // 1. 正则解析文件名
   try {
@@ -578,6 +606,11 @@ function applyParseResult(result) {
   parseInfo.year             = result.year || ''
   parseInfo.mediaType        = result.mediaType || 'tv'
   parseInfo.analyzeSource    = result.analyzeSource || 'regex'
+  // 成人内容检测
+  if (result.isAdult) {
+    isAdultDetected.value = true
+    adultSource.value = result.analyzeSource === 'ai' ? 'AI识别' : '文件名识别'
+  }
 }
 
 // ─── TMDB 搜索逻辑 ────────────────────────────────────────────────────────────
@@ -635,6 +668,11 @@ async function tryAiThenTmdb() {
 function selectTmdb(item) {
   selectedTmdb.value = item
   flowStep.value     = 2
+  // TMDB 成人内容标记
+  if (item.isAdult) {
+    isAdultDetected.value = true
+    adultSource.value = 'TMDB标记'
+  }
 
   // 自动填充归档配置
   archiveConfig.category = item.suggestedCategory || ''

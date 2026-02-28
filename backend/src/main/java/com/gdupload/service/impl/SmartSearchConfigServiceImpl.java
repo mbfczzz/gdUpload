@@ -106,6 +106,12 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         String uploadDir = null;
         String gdTargetPath = null;
 
+        // STRM配置变量
+        String strmOutputPath  = null;
+        String strmGdRemote    = null;
+        String strmGdPath      = null;
+        String strmPlayUrlBase = null;
+
         for (SmartSearchConfig config : allConfigs) {
             try {
                 Map<String, Object> data = JSONUtil.toBean(config.getConfigData(), Map.class);
@@ -196,6 +202,12 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
                             gdTargetPath = (String) data.get("gdTargetPath");
                         }
                         break;
+                    case "strm_config":
+                        if (data.containsKey("strmOutputPath"))  strmOutputPath  = (String) data.get("strmOutputPath");
+                        if (data.containsKey("strmGdRemote"))    strmGdRemote    = (String) data.get("strmGdRemote");
+                        if (data.containsKey("strmGdPath"))      strmGdPath      = (String) data.get("strmGdPath");
+                        if (data.containsKey("strmPlayUrlBase")) strmPlayUrlBase = (String) data.get("strmPlayUrlBase");
+                        break;
                 }
             } catch (Exception e) {
                 log.error("解析配置失败: {}", config.getConfigName(), e);
@@ -281,6 +293,12 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         if (gdTargetPath != null) {
             fullConfig.put("gdTargetPath", gdTargetPath);
         }
+
+        // 添加STRM配置到返回结果
+        if (strmOutputPath  != null) fullConfig.put("strmOutputPath",  strmOutputPath);
+        if (strmGdRemote    != null) fullConfig.put("strmGdRemote",    strmGdRemote);
+        if (strmGdPath      != null) fullConfig.put("strmGdPath",      strmGdPath);
+        if (strmPlayUrlBase != null) fullConfig.put("strmPlayUrlBase", strmPlayUrlBase);
 
         return fullConfig;
     }
@@ -444,6 +462,23 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
                 config.setConfigData(JSONUtil.toJsonStr(embyConfig));
                 config.setIsActive(true);
                 config.setRemark("Emby下载和上传目录配置");
+                configMapper.insert(config);
+            }
+
+            // 8. 保存STRM配置
+            Map<String, Object> strmConfig = new HashMap<>();
+            if (configData.containsKey("strmOutputPath"))  strmConfig.put("strmOutputPath",  configData.get("strmOutputPath"));
+            if (configData.containsKey("strmGdRemote"))    strmConfig.put("strmGdRemote",    configData.get("strmGdRemote"));
+            if (configData.containsKey("strmGdPath"))      strmConfig.put("strmGdPath",      configData.get("strmGdPath"));
+            if (configData.containsKey("strmPlayUrlBase")) strmConfig.put("strmPlayUrlBase", configData.get("strmPlayUrlBase"));
+            if (!strmConfig.isEmpty()) {
+                SmartSearchConfig config = new SmartSearchConfig();
+                config.setUserId(userId);
+                config.setConfigName("STRM生成配置");
+                config.setConfigType("strm_config");
+                config.setConfigData(JSONUtil.toJsonStr(strmConfig));
+                config.setIsActive(true);
+                config.setRemark("STRM文件生成和刮削配置");
                 configMapper.insert(config);
             }
 

@@ -49,4 +49,7 @@ public class ArchiveAnalyzeResult {
 
     /** 解析来源：regex / ai */
     private String analyzeSource;
+
+    /** 是否疑似成人内容（正则或AI判断） */
+    private Boolean isAdult;
 }

@@ -88,6 +88,12 @@ const routes = [
     name: 'Archive',
     component: () => import('@/views/Archive.vue'),
     meta: { title: '归档管理' }
+  },
+  {
+    path: '/strm-manager',
+    name: 'StrmManager',
+    component: () => import('@/views/StrmManager.vue'),
+    meta: { title: 'STRM监控' }
   }
 ]
 

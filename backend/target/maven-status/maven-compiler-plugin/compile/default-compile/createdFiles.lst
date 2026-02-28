@@ -2,6 +2,8 @@ com\gdupload\entity\SubscribeBatchTask.class
 com\gdupload\service\impl\SubscribeBatchExecutorServiceImpl.class
 com\gdupload\controller\FileCleanupController.class
 com\gdupload\controller\GdFileManagerController$MkdirRequest.class
+com\gdupload\service\impl\StrmCoreHelper$EpInfo.class
+com\gdupload\service\IStrmWatchService.class
 com\gdupload\mapper\EmbyItemCacheMapper.class
 com\gdupload\service\impl\Resource115ServiceImpl.class
 com\gdupload\config\EmbyProperties.class
@@ -11,6 +13,7 @@ com\gdupload\service\impl\SubscribeBatchTaskServiceImpl.class
 com\gdupload\mapper\SubscribeBatchLogMapper.class
 com\gdupload\service\IEmbyCacheService.class
 com\gdupload\service\IGdFileManagerService.class
+com\gdupload\service\impl\StrmCoreHelper.class
 com\gdupload\controller\GdFileManagerController$MoveRequest.class
 com\gdupload\entity\EmbyTagCache.class
 com\gdupload\dto\UploadResult.class
@@ -19,9 +22,11 @@ com\gdupload\controller\SubscribeBatchTaskController.class
 com\gdupload\controller\UploadTaskController.class
 com\gdupload\mapper\SmartSearchConfigMapper.class
 com\gdupload\controller\TmdbController.class
+com\gdupload\service\impl\StrmCoreHelper$ShowCache.class
 com\gdupload\controller\EmbyAuthController.class
 com\gdupload\config\AsyncConfig.class
 com\gdupload\mapper\Resource115Mapper.class
+com\gdupload\service\impl\StrmWatchServiceImpl.class
 com\gdupload\controller\FixFileInfoController.class
 com\gdupload\dto\EmbyGenre.class
 com\gdupload\service\impl\FileInfoServiceImpl.class
@@ -31,6 +36,7 @@ com\gdupload\entity\FileInfo.class
 com\gdupload\service\IResource115Service.class
 com\gdupload\service\impl\GdAccountServiceImpl.class
 com\gdupload\config\JacksonConfig.class
+com\gdupload\controller\StrmWatchController.class
 com\gdupload\mapper\FileInfoMapper.class
 com\gdupload\mapper\EmbyTagCacheMapper.class
 com\gdupload\service\IUploadTaskService.class
@@ -43,6 +49,7 @@ com\gdupload\entity\SmartSearchConfig.class
 com\gdupload\entity\EmbyConfig.class
 com\gdupload\mapper\EmbyConfigMapper.class
 com\gdupload\controller\TransferHistoryController.class
+com\gdupload\entity\StrmFileRecord.class
 com\gdupload\controller\SystemLogController.class
 com\gdupload\service\impl\Resource115ManageServiceImpl.class
 com\gdupload\controller\Resource115Controller.class
@@ -56,6 +63,7 @@ com\gdupload\entity\UploadTask.class
 com\gdupload\service\impl\EmbyConfigServiceImpl.class
 com\gdupload\entity\GdAccount.class
 com\gdupload\entity\EmbyGenreCache.class
+com\gdupload\mapper\StrmFileRecordMapper.class
 com\gdupload\service\impl\TransferHistoryServiceImpl.class
 com\gdupload\service\impl\Transfer115ServiceImpl.class
 com\gdupload\entity\EmbyItemCache.class
@@ -69,6 +77,7 @@ com\gdupload\service\IResource115ManageService.class
 com\gdupload\service\IWebSocketService.class
 com\gdupload\controller\EmbyDownloadHistoryController.class
 com\gdupload\mapper\EmbyLibraryCacheMapper.class
+com\gdupload\mapper\StrmWatchConfigMapper.class
 com\gdupload\service\impl\FileCleanupServiceImpl.class
 com\gdupload\config\MybatisPlusConfig.class
 com\gdupload\mapper\UploadTaskMapper.class
@@ -84,17 +93,22 @@ com\gdupload\service\IUploadService.class
 com\gdupload\common\GlobalExceptionHandler.class
 com\gdupload\mapper\SystemLogMapper.class
 com\gdupload\service\ISubscribeBatchExecutorService.class
+com\gdupload\service\IStrmService.class
 com\gdupload\service\impl\TmdbServiceImpl.class
 com\gdupload\service\impl\EmbyServiceImpl.class
 com\gdupload\controller\SmartSearchConfigController.class
 com\gdupload\GdUploadManagerApplication.class
+com\gdupload\service\impl\StrmWatchServiceImpl$SyncStatus.class
 com\gdupload\controller\GdFileManagerController.class
 com\gdupload\entity\ArchiveHistory.class
+com\gdupload\task\StrmWatchTask.class
 com\gdupload\config\WebSocketConfig.class
 com\gdupload\service\ISubscribeBatchTaskService.class
+com\gdupload\service\impl\StrmCoreHelper$ActorInfo.class
 com\gdupload\controller\DashboardController.class
 com\gdupload\dto\ArchiveExecuteRequest.class
 com\gdupload\service\impl\EmbyAuthService.class
+com\gdupload\service\impl\StrmServiceImpl$TaskStatus.class
 com\gdupload\mapper\GdAccountMapper.class
 com\gdupload\service\ISystemLogService.class
 com\gdupload\entity\EmbyStudioCache.class
@@ -105,6 +119,7 @@ com\gdupload\service\IFileCleanupService.class
 com\gdupload\entity\SubscribeBatchLog.class
 com\gdupload\dto\PagedResult.class
 com\gdupload\service\IBatchArchiveService.class
+com\gdupload\service\impl\StrmCoreHelper$StrmFileResult.class
 com\gdupload\service\impl\SystemLogServiceImpl.class
 com\gdupload\service\ITransferHistoryService.class
 com\gdupload\controller\EmbyController.class
@@ -130,11 +145,15 @@ com\gdupload\util\DbRetryUtil.class
 com\gdupload\service\impl\GdFileManagerServiceImpl.class
 com\gdupload\dto\ArchiveTmdbItem.class
 com\gdupload\util\RcloneResult.class
+com\gdupload\controller\StrmController.class
 com\gdupload\dto\GdFileItem.class
 com\gdupload\service\impl\UploadServiceImpl.class
 com\gdupload\task\QuotaResetTask.class
+com\gdupload\service\impl\StrmServiceImpl$1.class
+com\gdupload\entity\StrmWatchConfig.class
 com\gdupload\service\impl\UploadTaskServiceImpl.class
 com\gdupload\service\IEmbyService.class
+com\gdupload\service\impl\StrmServiceImpl.class
 com\gdupload\service\impl\GdFileManagerServiceImpl$1.class
 com\gdupload\entity\ArchiveBatchTask.class
 com\gdupload\entity\SystemLog.class

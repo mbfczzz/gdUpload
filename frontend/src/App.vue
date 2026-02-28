@@ -29,6 +29,10 @@
             <el-icon class="menu-icon"><FolderChecked /></el-icon>
             <span>归档管理</span>
           </el-menu-item>
+          <el-menu-item index="/strm-manager" class="menu-item">
+            <el-icon class="menu-icon"><Monitor /></el-icon>
+            <span>STRM监控</span>
+          </el-menu-item>
           <el-menu-item index="/task" class="menu-item">
             <el-icon class="menu-icon"><List /></el-icon>
             <span>任务管理</span>
@@ -121,7 +125,8 @@ const currentPageTitle = computed(() => {
     '/smart-search-config': '智能搜索配置',
     '/resource115': '115资源管理',
     '/gd-file-manager': 'GD文件管理',
-    '/archive': '归档管理'
+    '/archive': '归档管理',
+    '/strm-manager': 'STRM监控'
   }
   return titles[route.path] || '首页'
 })

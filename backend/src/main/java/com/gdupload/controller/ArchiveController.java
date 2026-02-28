@@ -116,9 +116,11 @@ public class ArchiveController {
             Process p = new ProcessBuilder(tool, arg)
                     .redirectErrorStream(true)
                     .start();
-            java.io.BufferedReader br = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(p.getInputStream()));
-            String firstLine = br.readLine();
+            String firstLine;
+            try (java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(p.getInputStream()))) {
+                firstLine = br.readLine();
+            }
             p.waitFor(5, java.util.concurrent.TimeUnit.SECONDS);
             info.put("available", true);
             info.put("version", firstLine != null ? firstLine.trim() : "");

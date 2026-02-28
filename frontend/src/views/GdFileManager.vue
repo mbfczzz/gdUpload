@@ -104,6 +104,13 @@
                   @click.stop="openBatchArchiveDialog(row)"
                 >批量归档</el-button>
                 <el-button
+                  v-if="row.isDir"
+                  type="info"
+                  link
+                  size="small"
+                  @click.stop="openStrmDialog(row)"
+                >生成STRM</el-button>
+                <el-button
                   type="primary"
                   link
                   size="small"
@@ -178,6 +185,13 @@
       v-model="archiveDialogVisible"
       :file="archiveFile"
     />
+
+    <!-- STRM 生成弹窗 -->
+    <StrmDialog
+      v-model="strmDialogVisible"
+      :gd-remote="strmGdRemote"
+      :gd-source-path="strmGdSourcePath"
+    />
   </div>
 </template>
 
@@ -188,6 +202,7 @@ import { getAccountList } from '@/api/account'
 import { listFiles, deleteFile, deleteDir, moveItem, mkdir } from '@/api/gdFileManager'
 import { startBatchArchive } from '@/api/archive'
 import ArchiveDialog from '@/components/ArchiveDialog.vue'
+import StrmDialog from '@/components/StrmDialog.vue'
 
 // ---- 账号 ----
 const accounts = ref([])
@@ -385,6 +400,21 @@ async function confirmMkdir() {
   }
 }
 
+// ---- 生成 STRM（目录） ----
+const strmDialogVisible  = ref(false)
+const strmGdRemote       = ref('')
+const strmGdSourcePath   = ref('')
+
+function openStrmDialog(row) {
+  const sourcePath = currentPath.value
+    ? `${currentPath.value}/${row.name}`
+    : row.name
+  const account = accounts.value.find(a => a.id === selectedAccountId.value)
+  strmGdRemote.value      = account?.rcloneConfigName || ''
+  strmGdSourcePath.value  = sourcePath
+  strmDialogVisible.value = true
+}
+
 // ---- 归档（单文件） ----
 const archiveDialogVisible = ref(false)
 const archiveFile = ref(null)
@@ -443,7 +473,7 @@ function formatSize(bytes) {
   if (bytes == null || bytes < 0) return '—'
   if (bytes === 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(1024))
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i]
 }
 
