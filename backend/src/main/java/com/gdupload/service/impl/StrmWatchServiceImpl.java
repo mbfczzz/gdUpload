@@ -226,6 +226,9 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
             tmdbApiKey = "";
             language   = "zh-CN";
         }
+        // lambda 只能捕获 effectively final 变量，try-catch 双分支赋值使编译器无法判定，用 final 副本解决
+        final String tmdbKey  = tmdbApiKey;
+        final String tmdbLang = language;
 
         addLog(syncStatus, "开始同步: " + config.getName() + (forceOverwrite ? " [强制重刮]" : ""));
 
@@ -296,7 +299,7 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
                         StrmCoreHelper.StrmFileResult result = coreHelper.processFileToStrm(
                                 config.getGdRemote(), config.getGdSourcePath(), relPath,
                                 config.getOutputPath(), config.getPlayUrlBase(),
-                                tmdbApiKey, language, showCache);
+                                tmdbKey, tmdbLang, showCache);
 
                         StrmFileRecord record = existing != null ? existing : new StrmFileRecord();
                         record.setWatchConfigId(configId);

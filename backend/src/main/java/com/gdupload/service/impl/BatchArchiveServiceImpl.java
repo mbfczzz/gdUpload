@@ -235,12 +235,15 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             // 2. 搜索 TMDB（带缓存：同一剧集多集只查一次 API）
             List<ArchiveTmdbItem> tmdbResults = Collections.emptyList();
             if (analyzed.getTitle() != null && !analyzed.getTitle().isEmpty()) {
-                String cacheKey = analyzed.getTitle().toLowerCase().trim()
-                        + "|" + (analyzed.getYear() != null ? analyzed.getYear() : "")
-                        + "|" + (analyzed.getMediaType() != null ? analyzed.getMediaType() : "");
+                final String analyzedTitle = analyzed.getTitle();
+                final String analyzedYear  = analyzed.getYear();
+                final String analyzedType  = analyzed.getMediaType();
+                String cacheKey = analyzedTitle.toLowerCase().trim()
+                        + "|" + (analyzedYear != null ? analyzedYear : "")
+                        + "|" + (analyzedType != null ? analyzedType : "");
                 boolean cacheHit = tmdbCache.containsKey(cacheKey);
                 tmdbResults = tmdbCache.computeIfAbsent(cacheKey, k ->
-                        archiveService.searchTmdb(analyzed.getTitle(), analyzed.getYear(), analyzed.getMediaType()));
+                        archiveService.searchTmdb(analyzedTitle, analyzedYear, analyzedType));
                 // 仅在实际发起 API 调用时限速（缓存命中则跳过 sleep）
                 if (!cacheHit && !tmdbResults.isEmpty()) {
                     try { Thread.sleep(250); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
