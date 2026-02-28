@@ -12,11 +12,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import javax.annotation.PostConstruct;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -51,6 +52,32 @@ public class StrmCoreHelper {
     static final Set<String> VIDEO_EXTS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
             "mkv", "mp4", "avi", "ts", "m2ts", "mov", "wmv", "flv", "rmvb", "rm", "m4v"
     )));
+
+    /** 图片下载专用线程池（32线程，守护，不阻塞主处理循环） */
+    private final ExecutorService imgPool = Executors.newFixedThreadPool(32, r -> {
+        Thread t = new Thread(r);
+        t.setDaemon(true);
+        t.setName("strm-img-dl");
+        return t;
+    });
+
+    /**
+     * TMDB API 令牌桶：最多 35 个并发令牌，每 10 秒补满。
+     * TMDB 官方限制 40 次/10s，留 5 个余量防 429。
+     */
+    private final Semaphore tmdbPermits = new Semaphore(35, true);
+
+    @PostConstruct
+    public void initRateLimiter() {
+        Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "tmdb-rate-refill");
+            t.setDaemon(true);
+            return t;
+        }).scheduleAtFixedRate(() -> {
+            int deficit = 35 - tmdbPermits.availablePermits();
+            if (deficit > 0) tmdbPermits.release(deficit);
+        }, 10, 10, TimeUnit.SECONDS);
+    }
 
     /** 匹配目录名中的 [tmdbid=12345] 标记（大小写不敏感） */
     private static final Pattern TMDB_ID_PATTERN =
@@ -98,7 +125,7 @@ public class StrmCoreHelper {
         public List<ActorInfo>  actors    = new ArrayList<>();  // 演员表（前15位）
         public String           category;
         public String           dirName;
-        public boolean          metadataWritten = false;
+        public volatile boolean metadataWritten = false;
         public Map<String, List<EpInfo>> seasonEpsCache    = new HashMap<>();
         public Map<String, String>       seasonPosterPaths = new HashMap<>(); // "s1" → poster_path
     }
@@ -227,7 +254,8 @@ public class StrmCoreHelper {
         // 类型优先取 cache.type（TMDB 直查时已确定），其次取文件名解析结果
         String resolvedType = cache.type != null ? cache.type : safe(parsed.getMediaType());
         String category  = cache.category != null ? cache.category : defaultCategory(resolvedType);
-        String dirName   = cache.dirName  != null ? cache.dirName  : buildFallbackDirName(parsed);
+        String dirName   = sanitizeDirName(
+                cache.dirName != null ? cache.dirName : buildFallbackDirName(parsed));
         String seasonDir = "";
         if ("tv".equals(resolvedType) && parsed.getSeason() != null) {
             seasonDir = "Season " + parsed.getSeason();
@@ -268,17 +296,16 @@ public class StrmCoreHelper {
             cache.metadataWritten = true;
         }
 
-        // 9. 集缩略图（*-thumb.jpg）— Emby 集列表封面
+        // 9. 集缩略图（*-thumb.jpg）— Emby 集列表封面（异步，不阻塞主循环）
         if (epInfo != null && epInfo.stillPath != null) {
-            downloadImage(TMDB_IMG_W500 + epInfo.stillPath, outDir.resolve(baseName + "-thumb.jpg"));
+            downloadImageAsync(TMDB_IMG_W500 + epInfo.stillPath, outDir.resolve(baseName + "-thumb.jpg"));
         }
 
-        // 10. 季海报（Season N/poster.jpg）— Emby 季封面
+        // 10. 季海报（Season N/poster.jpg）— Emby 季封面（异步）
         if ("tv".equals(resolvedType) && !seasonDir.isEmpty() && parsed.getSeason() != null) {
             String seasonPoster = cache.seasonPosterPaths.get("s" + parsed.getSeason());
             if (seasonPoster != null) {
-                // downloadImage 内部已有 Files.exists 判断，同一季多集只下载一次
-                downloadImage(TMDB_IMG_W500 + seasonPoster, outDir.resolve("poster.jpg"));
+                downloadImageAsync(TMDB_IMG_W500 + seasonPoster, outDir.resolve("poster.jpg"));
             }
         }
 
@@ -371,8 +398,7 @@ public class StrmCoreHelper {
                 String url = isTV
                         ? String.format(TMDB_DETAILS_TV_URL,    tmdbId, tmdbApiKey, language)
                         : String.format(TMDB_DETAILS_MOVIE_URL, tmdbId, tmdbApiKey, language);
-                JSONObject obj = JSONUtil.parseObj(
-                        HttpRequest.get(url).timeout(15000).execute().body());
+                JSONObject obj = tmdbGet(url);
                 // TMDB 查询失败时返回 {"status_code":34,...}
                 if (obj.containsKey("status_code")) continue;
 
@@ -488,7 +514,7 @@ public class StrmCoreHelper {
             String url = isTV
                     ? String.format(TMDB_DETAILS_TV_URL,    cache.tmdbId, tmdbApiKey, language)
                     : String.format(TMDB_DETAILS_MOVIE_URL, cache.tmdbId, tmdbApiKey, language);
-            JSONObject obj = JSONUtil.parseObj(HttpRequest.get(url).timeout(15000).execute().body());
+            JSONObject obj = tmdbGet(url);
 
             cache.overview     = obj.getStr("overview");
             cache.posterPath   = obj.getStr("poster_path");
@@ -655,7 +681,7 @@ public class StrmCoreHelper {
         int tmdbId = cache.tmdbId;
         try {
             String url = String.format(TMDB_SEASON_URL, tmdbId, seasonNum, tmdbApiKey, language);
-            JSONObject obj = JSONUtil.parseObj(HttpRequest.get(url).timeout(15000).execute().body());
+            JSONObject obj = tmdbGet(url);
             // 存储季海报路径，供后续下载 Season poster.jpg
             String seasonPoster = obj.getStr("poster_path");
             if (seasonPoster != null) {
@@ -706,10 +732,10 @@ public class StrmCoreHelper {
                 writeTvshowNfo(showDir, cache);
             }
             if (cache.posterPath != null) {
-                downloadImage(TMDB_IMG_W500 + cache.posterPath, showDir.resolve("poster.jpg"));
+                downloadImageAsync(TMDB_IMG_W500 + cache.posterPath, showDir.resolve("poster.jpg"));
             }
             if (cache.backdropPath != null) {
-                downloadImage(TMDB_IMG_ORIG + cache.backdropPath, showDir.resolve("fanart.jpg"));
+                downloadImageAsync(TMDB_IMG_ORIG + cache.backdropPath, showDir.resolve("fanart.jpg"));
             }
         } catch (Exception e) {
             log.warn("写节目元数据失败: dir={}, err={}", showDir, e.getMessage());
@@ -824,14 +850,26 @@ public class StrmCoreHelper {
         sb.append("</movie>\n");
         writeTextFile(outDir.resolve(baseName + ".nfo"), sb.toString());
 
-        // 电影封面下载到同目录
-        try {
-            if (cache.posterPath   != null) downloadImage(TMDB_IMG_W500 + cache.posterPath,   outDir.resolve("poster.jpg"));
-            if (cache.backdropPath != null) downloadImage(TMDB_IMG_ORIG + cache.backdropPath, outDir.resolve("fanart.jpg"));
-        } catch (Exception ignored) {}
+        // 电影封面下载到同目录（异步，不阻塞主循环）
+        if (cache.posterPath   != null) downloadImageAsync(TMDB_IMG_W500 + cache.posterPath,   outDir.resolve("poster.jpg"));
+        if (cache.backdropPath != null) downloadImageAsync(TMDB_IMG_ORIG + cache.backdropPath, outDir.resolve("fanart.jpg"));
     }
 
     // ─── 图片下载 ─────────────────────────────────────────────────────────────
+
+    /**
+     * 受令牌桶保护的 TMDB HTTP GET，自动限速（≤35次/10s）。
+     * 所有对 TMDB API 的调用都应通过此方法，防止触发 429。
+     */
+    private JSONObject tmdbGet(String url) throws Exception {
+        try {
+            tmdbPermits.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("TMDB 请求被中断", e);
+        }
+        return JSONUtil.parseObj(HttpRequest.get(url).timeout(15000).execute().body());
+    }
 
     public void downloadImage(String url, Path dest) {
         if (url == null || url.isEmpty()) return;
@@ -842,6 +880,16 @@ public class StrmCoreHelper {
         } catch (Exception e) {
             log.warn("下载图片失败: url={}, err={}", url, e.getMessage());
         }
+    }
+
+    /**
+     * 异步下载图片：提交到后台线程池，不阻塞调用方。
+     * 调用前先做 Files.exists 快速判断，避免对已存在文件提交任务。
+     */
+    public void downloadImageAsync(String url, Path dest) {
+        if (url == null || url.isEmpty() || dest == null) return;
+        if (Files.exists(dest)) return;
+        imgPool.submit(() -> downloadImage(url, dest));
     }
 
     // ─── 辅助 ─────────────────────────────────────────────────────────────────
@@ -907,5 +955,15 @@ public class StrmCoreHelper {
 
     public String safe(String s) {
         return s == null ? "" : s;
+    }
+
+    /**
+     * 清理目录名中的非法文件系统字符（Windows + Linux 通用）。
+     * Windows 禁止 \ / : * ? " < > | 出现在路径组件中；Linux 只禁止 / 和 \0，
+     * 但统一清理可避免跨平台问题（电影标题常含冒号，如 "Avatar: The Way of Water"）。
+     */
+    public String sanitizeDirName(String name) {
+        if (name == null) return "未知";
+        return name.replaceAll("[\\\\/:*?\"<>|]", "").replaceAll("\\s{2,}", " ").trim();
     }
 }

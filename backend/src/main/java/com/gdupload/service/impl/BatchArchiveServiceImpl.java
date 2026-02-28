@@ -26,6 +26,8 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
@@ -131,47 +133,56 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 return;
             }
 
-            // 3. 逐文件处理
-            for (GdFileItem file : mediaFiles) {
-                if (Thread.currentThread().isInterrupted()) break;
+            // 3. 并行处理文件
+            // TMDB 结果缓存（ConcurrentHashMap，多线程安全）
+            Map<String, List<ArchiveTmdbItem>> tmdbCache = new ConcurrentHashMap<>();
+            // 取消标志
+            AtomicInteger cancelFlag = new AtomicInteger(0);
 
-                // 检查是否已被取消 / 暂停
-                boolean shouldStop = false;
+            // 8 线程并行（rclone moveto + TMDB 都是 I/O 密集型，线程多效果好）
+            ExecutorService pool = Executors.newFixedThreadPool(8, r -> {
+                Thread t = new Thread(r, "batch-archive-worker");
+                t.setDaemon(true);
+                return t;
+            });
+            List<Future<?>> futures = new ArrayList<>(mediaFiles.size());
+
+            for (GdFileItem file : mediaFiles) {
+                if (cancelFlag.get() != 0 || Thread.currentThread().isInterrupted()) break;
+
+                // 暂停检测（在提交前检查，避免提交大量任务后才发现暂停）
                 while (true) {
                     ArchiveBatchTask snap = batchTaskMapper.selectById(taskId);
                     if (snap == null || "FAILED".equals(snap.getStatus())) {
-                        log.info("[{}] 任务已被取消，停止处理", taskId);
-                        shouldStop = true;
+                        cancelFlag.set(1);
                         break;
                     }
                     if ("PAUSED".equals(snap.getStatus())) {
-                        log.debug("[{}] 任务已暂停，等待恢复...", taskId);
-                        try {
-                            Thread.sleep(2000);
-                        } catch (InterruptedException ie) {
+                        try { Thread.sleep(2000); } catch (InterruptedException ie) {
                             Thread.currentThread().interrupt();
-                            shouldStop = true;
+                            cancelFlag.set(1);
                             break;
                         }
                         continue;
                     }
-                    break; // RUNNING — 继续处理
+                    break; // RUNNING
                 }
-                if (shouldStop) break;
+                if (cancelFlag.get() != 0) break;
 
-                // 更新当前处理文件
                 final String fname = file.getName();
                 applyUpdate(taskId, t -> t.setCurrentFile(fname));
 
-                safeProcessOneFile(taskId, rcloneConfigName, sourcePath, file);
+                futures.add(pool.submit(() -> {
+                    if (cancelFlag.get() != 0) return;
+                    safeProcessOneFile(taskId, rcloneConfigName, sourcePath, file, tmdbCache);
+                }));
+            }
 
-                // TMDB 限速：每次 HTTP 请求之间稍作等待
-                try {
-                    Thread.sleep(400);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+            pool.shutdown();
+            try {
+                pool.awaitTermination(24, TimeUnit.HOURS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
             }
 
             // 4. 更新最终状态
@@ -192,7 +203,8 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
     // ─── 单文件处理 ───────────────────────────────────────────────────────────
 
     private void safeProcessOneFile(Long taskId, String rcloneConfigName,
-                                    String sourcePath, GdFileItem file) {
+                                    String sourcePath, GdFileItem file,
+                                    Map<String, List<ArchiveTmdbItem>> tmdbCache) {
         String filename = file.getName();
         // file.getPath() 是相对于 sourcePath 的路径
         String fullPath = buildFullPath(sourcePath, file.getPath());
@@ -220,11 +232,19 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             ArchiveAnalyzeResult analyzed = archiveService.analyzeFilename(filename);
             String processMethod = "tmdb";
 
-            // 2. 搜索 TMDB
+            // 2. 搜索 TMDB（带缓存：同一剧集多集只查一次 API）
             List<ArchiveTmdbItem> tmdbResults = Collections.emptyList();
             if (analyzed.getTitle() != null && !analyzed.getTitle().isEmpty()) {
-                tmdbResults = archiveService.searchTmdb(
-                        analyzed.getTitle(), analyzed.getYear(), analyzed.getMediaType());
+                String cacheKey = analyzed.getTitle().toLowerCase().trim()
+                        + "|" + (analyzed.getYear() != null ? analyzed.getYear() : "")
+                        + "|" + (analyzed.getMediaType() != null ? analyzed.getMediaType() : "");
+                boolean cacheHit = tmdbCache.containsKey(cacheKey);
+                tmdbResults = tmdbCache.computeIfAbsent(cacheKey, k ->
+                        archiveService.searchTmdb(analyzed.getTitle(), analyzed.getYear(), analyzed.getMediaType()));
+                // 仅在实际发起 API 调用时限速（缓存命中则跳过 sleep）
+                if (!cacheHit && !tmdbResults.isEmpty()) {
+                    try { Thread.sleep(250); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                }
             }
 
             // 3. TMDB 无结果 → AI 兜底
@@ -232,8 +252,15 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 try {
                     ArchiveAnalyzeResult aiResult = archiveService.aiAnalyzeFilename(filename);
                     if (aiResult.getTitle() != null && !aiResult.getTitle().isEmpty()) {
-                        List<ArchiveTmdbItem> aiTmdb = archiveService.searchTmdb(
-                                aiResult.getTitle(), aiResult.getYear(), aiResult.getMediaType());
+                        String aiKey = aiResult.getTitle().toLowerCase().trim()
+                                + "|" + (aiResult.getYear() != null ? aiResult.getYear() : "")
+                                + "|" + (aiResult.getMediaType() != null ? aiResult.getMediaType() : "");
+                        boolean aiCacheHit = tmdbCache.containsKey(aiKey);
+                        List<ArchiveTmdbItem> aiTmdb = tmdbCache.computeIfAbsent(aiKey, k ->
+                                archiveService.searchTmdb(aiResult.getTitle(), aiResult.getYear(), aiResult.getMediaType()));
+                        if (!aiCacheHit && !aiTmdb.isEmpty()) {
+                            try { Thread.sleep(250); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                        }
                         if (!aiTmdb.isEmpty()) {
                             analyzed = aiResult;
                             tmdbResults = aiTmdb;
@@ -334,8 +361,8 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
 
     // ─── 内部工具 ─────────────────────────────────────────────────────────────
 
-    /** 从 DB 读取 → 应用修改 → 写回，保证计数器原子性累加 */
-    private void applyUpdate(Long taskId, Consumer<ArchiveBatchTask> modifier) {
+    /** 从 DB 读取 → 应用修改 → 写回，synchronized 防止并发 read-modify-write 丢失更新 */
+    private synchronized void applyUpdate(Long taskId, Consumer<ArchiveBatchTask> modifier) {
         ArchiveBatchTask t = batchTaskMapper.selectById(taskId);
         if (t == null) return;
         modifier.accept(t);

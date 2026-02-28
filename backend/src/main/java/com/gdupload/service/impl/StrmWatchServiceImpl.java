@@ -14,12 +14,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import org.springframework.beans.factory.annotation.Value;
+
 import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -46,6 +47,10 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
     /** 每批 DB 批量写入的大小 */
     private static final int DB_BATCH_SIZE = 500;
 
+    /** 文件处理并发数（每个同步任务内部并行处理文件的线程数） */
+    @Value("${app.strm.process-concurrency:16}")
+    private int processConcurrency;
+
     /** 各配置独立的同步状态，key = configId */
     private final Map<Long, SyncStatus> syncStatusMap = new ConcurrentHashMap<>();
 
@@ -64,12 +69,12 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
 
     static class SyncStatus {
         volatile String phase        = "IDLE"; // IDLE/RUNNING/DONE/ERROR
-        volatile int    total        = 0;
-        volatile int    processed    = 0;
-        volatile int    newCount     = 0;
-        volatile int    deletedCount = 0;
-        volatile int    updatedCount = 0;
-        volatile int    failedCount  = 0;
+        final AtomicInteger total        = new AtomicInteger();
+        final AtomicInteger processed    = new AtomicInteger();
+        final AtomicInteger newCount     = new AtomicInteger();
+        final AtomicInteger deletedCount = new AtomicInteger();
+        final AtomicInteger updatedCount = new AtomicInteger();
+        final AtomicInteger failedCount  = new AtomicInteger();
         volatile String currentFile  = "";
         volatile String errorMessage = "";
         // LinkedList: 头部删除 O(1)，ArrayList 头部删除 O(n)
@@ -148,12 +153,12 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
         SyncStatus s = syncStatusMap.getOrDefault(configId, new SyncStatus());
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("phase",        s.phase);
-        r.put("total",        s.total);
-        r.put("processed",    s.processed);
-        r.put("newCount",     s.newCount);
-        r.put("deletedCount", s.deletedCount);
-        r.put("updatedCount", s.updatedCount);
-        r.put("failedCount",  s.failedCount);
+        r.put("total",        s.total.get());
+        r.put("processed",    s.processed.get());
+        r.put("newCount",     s.newCount.get());
+        r.put("deletedCount", s.deletedCount.get());
+        r.put("updatedCount", s.updatedCount.get());
+        r.put("failedCount",  s.failedCount.get());
         r.put("currentFile",  s.currentFile);
         r.put("logs",         new ArrayList<>(s.logs));
         r.put("errorMessage", s.errorMessage);
@@ -231,7 +236,7 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
                     config.getGdRemote(), config.getGdSourcePath());
             int gdTotal = gdFiles.size();
             addLog(syncStatus, "GD 文件数: " + gdTotal);
-            syncStatus.total = gdTotal;
+            syncStatus.total.set(gdTotal);
 
             // ── 2. 分页加载 DB 记录，避免百万级 selectList 一次 OOM
             addLog(syncStatus, "加载 DB 已有记录...");
@@ -249,99 +254,114 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
                 processDeletes(toDelete, syncStatus);
             }
 
-            // ── 4/5. 新增 & 更新处理（批量写入）
-            Map<String, StrmCoreHelper.ShowCache> showCache = new HashMap<>();
-            List<StrmFileRecord> insertBatch = new ArrayList<>(DB_BATCH_SIZE);
-            List<StrmFileRecord> updateBatch = new ArrayList<>(DB_BATCH_SIZE);
+            // ── 4/5. 新增 & 更新处理（并行）
+            // ConcurrentHashMap 保证 showCache 多线程安全（computeIfAbsent 原子性）
+            Map<String, StrmCoreHelper.ShowCache> showCache = new ConcurrentHashMap<>();
+            ConcurrentLinkedQueue<StrmFileRecord> insertQueue = new ConcurrentLinkedQueue<>();
+            ConcurrentLinkedQueue<StrmFileRecord> updateQueue = new ConcurrentLinkedQueue<>();
+
+            int concurrency = Math.max(1, processConcurrency);
+            ExecutorService filePool = Executors.newFixedThreadPool(concurrency, r -> {
+                Thread t = new Thread(r);
+                t.setDaemon(true);
+                t.setName("strm-proc-" + t.getId());
+                return t;
+            });
+            List<Future<?>> futures = new ArrayList<>(gdFiles.size());
 
             for (Map.Entry<String, String> e : gdFiles.entrySet()) {
-                String relPath = e.getKey();
-                String mtime   = e.getValue();
-                syncStatus.currentFile = relPath;
-
-                StrmFileRecord existing = dbMap.get(relPath);
-                // deleted：文件曾被删后重新出现在 GD，需重新处理（否则下面 insertBatch 会因唯一键冲突失败）
-                boolean isNew = existing == null
+                final String relPath = e.getKey();
+                final String mtime   = e.getValue();
+                final StrmFileRecord existing = dbMap.get(relPath);
+                // deleted：文件曾被删后重新出现在 GD，需重新处理
+                final boolean isNew = existing == null
                         || "failed".equals(existing.getStatus())
                         || "deleted".equals(existing.getStatus());
-                boolean isUpdated = !isNew && !mtime.equals(existing.getFileModTime());
+                final boolean isUpdated = !isNew && !mtime.equals(existing.getFileModTime());
 
                 // 未变化且不强制：跳过（仍计入进度）
                 if (!isNew && !isUpdated && !forceOverwrite) {
-                    syncStatus.processed++;
+                    syncStatus.processed.incrementAndGet();
                     continue;
                 }
 
-                // 删除旧文件（更新 / 强制覆盖时）
-                if (existing != null && (isUpdated || forceOverwrite)) {
-                    coreHelper.deleteLocalFiles(
-                            existing.getStrmLocalPath(), existing.getNfoLocalPath(), existing.getShowDir());
-                }
-
-                try {
-                    StrmCoreHelper.StrmFileResult result = coreHelper.processFileToStrm(
-                            config.getGdRemote(), config.getGdSourcePath(), relPath,
-                            config.getOutputPath(), config.getPlayUrlBase(),
-                            tmdbApiKey, language, showCache);
-
-                    StrmFileRecord record = existing != null ? existing : new StrmFileRecord();
-                    record.setWatchConfigId(configId);
-                    record.setGdRemote(config.getGdRemote());
-                    record.setRelFilePath(relPath);
-                    record.setFileModTime(mtime);
-                    record.setStrmLocalPath(result.strmLocalPath);
-                    record.setNfoLocalPath(result.nfoLocalPath);
-                    record.setShowDir(result.showDir);
-                    record.setTmdbId(result.tmdbId);
-                    record.setStatus("success");
-                    record.setFailReason(null);
-
-                    if (existing == null) {
-                        insertBatch.add(record);
-                        syncStatus.newCount++;
-                    } else {
-                        updateBatch.add(record);
-                        // isNew（原 failed/deleted 重新处理）、mtime 变化、强制重刮，均计入更新数
-                        if (isNew || isUpdated || forceOverwrite) syncStatus.updatedCount++;
+                futures.add(filePool.submit(() -> {
+                    // 删除旧文件（更新 / 强制覆盖时）
+                    if (existing != null && (isUpdated || forceOverwrite)) {
+                        coreHelper.deleteLocalFiles(
+                                existing.getStrmLocalPath(), existing.getNfoLocalPath(), existing.getShowDir());
                     }
 
-                    // 成功日志：每 500 条汇总一次，避免日志爆炸
-                    int doneOk = syncStatus.newCount + syncStatus.updatedCount;
-                    if (doneOk == 1 || doneOk % 500 == 0) {
-                        addLog(syncStatus, "进度: 已处理 " + syncStatus.processed
-                                + "/" + syncStatus.total + "  新增=" + syncStatus.newCount
-                                + " 更新=" + syncStatus.updatedCount
-                                + " 失败=" + syncStatus.failedCount);
+                    try {
+                        StrmCoreHelper.StrmFileResult result = coreHelper.processFileToStrm(
+                                config.getGdRemote(), config.getGdSourcePath(), relPath,
+                                config.getOutputPath(), config.getPlayUrlBase(),
+                                tmdbApiKey, language, showCache);
+
+                        StrmFileRecord record = existing != null ? existing : new StrmFileRecord();
+                        record.setWatchConfigId(configId);
+                        record.setGdRemote(config.getGdRemote());
+                        record.setRelFilePath(relPath);
+                        record.setFileModTime(mtime);
+                        record.setStrmLocalPath(result.strmLocalPath);
+                        record.setNfoLocalPath(result.nfoLocalPath);
+                        record.setShowDir(result.showDir);
+                        record.setTmdbId(result.tmdbId);
+                        record.setStatus("success");
+                        record.setFailReason(null);
+
+                        if (existing == null) {
+                            insertQueue.add(record);
+                            syncStatus.newCount.incrementAndGet();
+                        } else {
+                            updateQueue.add(record);
+                            if (isNew || isUpdated || forceOverwrite) syncStatus.updatedCount.incrementAndGet();
+                        }
+
+                        // 每 200 条成功记录打一次进度日志
+                        int doneOk = syncStatus.newCount.get() + syncStatus.updatedCount.get();
+                        if (doneOk == 1 || doneOk % 200 == 0) {
+                            addLog(syncStatus, "进度: 已处理 " + syncStatus.processed.get()
+                                    + "/" + syncStatus.total.get()
+                                    + "  新增=" + syncStatus.newCount.get()
+                                    + " 更新=" + syncStatus.updatedCount.get()
+                                    + " 失败=" + syncStatus.failedCount.get());
+                        }
+
+                    } catch (Exception ex) {
+                        log.error("[StrmWatch] 处理文件失败: {}", relPath, ex);
+                        addLog(syncStatus, "✗ 失败: " + relPath + " — " + ex.getMessage());
+
+                        StrmFileRecord record = existing != null ? existing : new StrmFileRecord();
+                        record.setWatchConfigId(configId);
+                        record.setGdRemote(config.getGdRemote());
+                        record.setRelFilePath(relPath);
+                        record.setFileModTime(mtime);
+                        record.setStatus("failed");
+                        record.setFailReason(ex.getMessage() != null
+                                ? ex.getMessage().substring(0, Math.min(500, ex.getMessage().length())) : "unknown");
+                        // 失败记录立即写入（不批量，方便断点续传）
+                        if (existing == null) fileRecordMapper.insert(record);
+                        else                 fileRecordMapper.updateById(record);
+                        syncStatus.failedCount.incrementAndGet();
+                    } finally {
+                        syncStatus.processed.incrementAndGet();
                     }
-
-                } catch (Exception ex) {
-                    log.error("[StrmWatch] 处理文件失败: {}", relPath, ex);
-                    addLog(syncStatus, "✗ 失败: " + relPath + " — " + ex.getMessage());
-
-                    StrmFileRecord record = existing != null ? existing : new StrmFileRecord();
-                    record.setWatchConfigId(configId);
-                    record.setGdRemote(config.getGdRemote());
-                    record.setRelFilePath(relPath);
-                    record.setFileModTime(mtime);
-                    record.setStatus("failed");
-                    record.setFailReason(ex.getMessage() != null
-                            ? ex.getMessage().substring(0, Math.min(500, ex.getMessage().length())) : "unknown");
-                    // 失败记录立即写入（不批量，方便断点续传）
-                    if (existing == null) fileRecordMapper.insert(record);
-                    else                 fileRecordMapper.updateById(record);
-                    syncStatus.failedCount++;
-                }
-
-                syncStatus.processed++;
-
-                // 达到批次阈值时写库
-                if (insertBatch.size() >= DB_BATCH_SIZE) { flushInsert(insertBatch); insertBatch.clear(); }
-                if (updateBatch.size() >= DB_BATCH_SIZE) { flushUpdate(updateBatch); updateBatch.clear(); }
+                }));
             }
 
-            // 最后一批刷库
-            flushInsert(insertBatch);
-            flushUpdate(updateBatch);
+            // 等待所有文件处理完成（大目录可能耗时数小时）
+            filePool.shutdown();
+            try {
+                filePool.awaitTermination(24, TimeUnit.HOURS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                log.warn("[StrmWatch] 等待文件处理完成时被中断");
+            }
+
+            // 一次性批量刷库
+            flushInsert(new ArrayList<>(insertQueue));
+            flushUpdate(new ArrayList<>(updateQueue));
 
             // ── 6. 更新配置统计
             long totalValid = fileRecordMapper.selectCount(
@@ -354,17 +374,17 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
             doneUpdate.setStatus("IDLE");
             doneUpdate.setLastScanTime(LocalDateTime.now());
             doneUpdate.setNextScanTime(LocalDateTime.now().plusMinutes(config.getScanIntervalMinutes()));
-            doneUpdate.setLastNewCount(syncStatus.newCount);
-            doneUpdate.setLastDeletedCount(syncStatus.deletedCount);
-            doneUpdate.setLastUpdatedCount(syncStatus.updatedCount);
+            doneUpdate.setLastNewCount(syncStatus.newCount.get());
+            doneUpdate.setLastDeletedCount(syncStatus.deletedCount.get());
+            doneUpdate.setLastUpdatedCount(syncStatus.updatedCount.get());
             doneUpdate.setTotalFiles((int) totalValid);
             configMapper.updateById(doneUpdate);
 
             syncStatus.phase = "DONE";
-            addLog(syncStatus, "✓ 全部完成  新增=" + syncStatus.newCount
-                    + " 删除=" + syncStatus.deletedCount
-                    + " 更新=" + syncStatus.updatedCount
-                    + " 失败=" + syncStatus.failedCount);
+            addLog(syncStatus, "✓ 全部完成  新增=" + syncStatus.newCount.get()
+                    + " 删除=" + syncStatus.deletedCount.get()
+                    + " 更新=" + syncStatus.updatedCount.get()
+                    + " 失败=" + syncStatus.failedCount.get());
 
         } catch (Exception e) {
             log.error("[StrmWatch] 同步异常: configId={}", configId, e);
@@ -417,7 +437,7 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
         // 先删除本地文件（传入 showDir 作为向上清理的边界）
         for (StrmFileRecord r : toDelete) {
             coreHelper.deleteLocalFiles(r.getStrmLocalPath(), r.getNfoLocalPath(), r.getShowDir());
-            syncStatus.deletedCount++;
+            syncStatus.deletedCount.incrementAndGet();
         }
         // 批量更新 DB status=deleted（按 1000 条分批避免 IN 子句过长）
         List<Long> ids = toDelete.stream().map(StrmFileRecord::getId).collect(Collectors.toList());
