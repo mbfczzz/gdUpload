@@ -5,11 +5,14 @@ import com.gdupload.common.Result;
 import com.gdupload.dto.GdFileItem;
 import com.gdupload.dto.PagedResult;
 import com.gdupload.entity.GdAccount;
+import com.gdupload.service.IBatchFormatRenameService;
 import com.gdupload.service.IGdAccountService;
 import com.gdupload.service.IGdFileManagerService;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
 
 /**
  * GD文件管理控制器
@@ -19,8 +22,9 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class GdFileManagerController {
 
-    private final IGdFileManagerService gdFileManagerService;
-    private final IGdAccountService accountService;
+    private final IGdFileManagerService     gdFileManagerService;
+    private final IGdAccountService         accountService;
+    private final IBatchFormatRenameService batchFormatRenameService;
 
     /**
      * 列出目录内容（服务端分页）
@@ -66,6 +70,39 @@ public class GdFileManagerController {
         return Result.success();
     }
 
+    // ─── 批量格式化命名 ──────────────────────────────────────────────────────────
+
+    /**
+     * 启动批量格式化命名任务（异步）
+     */
+    @PostMapping("/batch-format/start")
+    public Result<Map<String, Object>> startBatchFormat(@RequestBody BatchFormatRequest req) {
+        GdAccount account = getValidAccount(req.getAccountId());
+        String taskId = batchFormatRenameService.startTask(
+                account.getRcloneConfigName(),
+                req.getDirPath() != null ? req.getDirPath() : "");
+        Map<String, Object> resp = new java.util.HashMap<>();
+        resp.put("taskId", taskId);
+        return Result.success(resp);
+    }
+
+    /**
+     * 查询批量格式化命名任务进度
+     */
+    @GetMapping("/batch-format/{taskId}/status")
+    public Result<Map<String, Object>> getBatchFormatStatus(@PathVariable String taskId) {
+        return Result.success(batchFormatRenameService.getStatus(taskId));
+    }
+
+    /**
+     * 取消批量格式化命名任务
+     */
+    @DeleteMapping("/batch-format/{taskId}")
+    public Result<Void> cancelBatchFormat(@PathVariable String taskId) {
+        batchFormatRenameService.cancelTask(taskId);
+        return Result.success();
+    }
+
     /**
      * 创建目录
      */
@@ -108,5 +145,11 @@ public class GdFileManagerController {
     public static class MkdirRequest {
         private Long accountId;
         private String path;
+    }
+
+    @Data
+    public static class BatchFormatRequest {
+        private Long accountId;
+        private String dirPath;
     }
 }

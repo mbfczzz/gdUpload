@@ -20,6 +20,10 @@
                 <el-icon><FolderOpened /></el-icon>
                 扫描目录
               </el-button>
+              <el-button type="warning" @click="handleLocalRename" :disabled="!taskForm.sourcePath">
+                <el-icon><Edit /></el-icon>
+                格式化文件名
+              </el-button>
             </template>
           </el-input>
         </el-form-item>
@@ -117,6 +121,65 @@
       @archived="onFileArchived"
     />
 
+    <!-- 本地格式化重命名对话框 -->
+    <el-dialog
+      v-model="localRenameVisible"
+      title="格式化文件名"
+      width="700px"
+      :close-on-click-modal="false"
+      @close="stopRenamePoll"
+    >
+      <div>
+        <div style="display: flex; gap: 16px; margin-bottom: 16px;">
+          <el-statistic title="总计" :value="localRenameStatus.total" />
+          <el-statistic title="已处理" :value="localRenameStatus.processed" />
+          <el-statistic title="已重命名" :value="localRenameStatus.renamed" style="color: #67c23a" />
+          <el-statistic title="已跳过" :value="localRenameStatus.skipped" />
+          <el-statistic title="失败" :value="localRenameStatus.failed" />
+        </div>
+
+        <el-progress
+          :percentage="renameProgress"
+          :status="renameProgressStatus"
+          :striped="isRenameRunning"
+          :striped-flow="isRenameRunning"
+        />
+
+        <div v-if="localRenameStatus.currentFile" style="margin: 8px 0; color: #909399; font-size: 12px;">
+          正在处理: {{ localRenameStatus.currentFile }}
+        </div>
+
+        <div v-if="localRenameStatus.errorMessage" style="margin: 8px 0; color: #f56c6c; font-size: 13px;">
+          错误: {{ localRenameStatus.errorMessage }}
+        </div>
+
+        <div
+          ref="logContainerRef"
+          style="height: 320px; overflow-y: auto; background: #1e1e2e; border-radius: 6px;
+                 padding: 10px 12px; margin-top: 12px; font-family: monospace; font-size: 12px;
+                 color: #cdd6f4; line-height: 1.6;"
+        >
+          <div
+            v-for="(logLine, i) in localRenameStatus.logs"
+            :key="i"
+            style="white-space: pre-wrap; margin-bottom: 2px;"
+            :style="{ color: logLine.includes('✓') ? '#a6e3a1' : logLine.includes('✗') ? '#f38ba8' : '#cdd6f4' }"
+          >{{ logLine }}</div>
+          <div v-if="!localRenameStatus.logs.length" style="color: #6c7086;">等待任务开始...</div>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button v-if="isRenameRunning" type="danger" @click="handleCancelLocalRename">取消</el-button>
+        <el-button
+          v-if="localRenameStatus.phase === 'DONE'"
+          type="primary"
+          @click="handleScanDirectory(); localRenameVisible = false"
+        >重新扫描目录</el-button>
+        <el-button @click="localRenameVisible = false" :disabled="isRenameRunning">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 空状态 -->
     <el-card v-if="scannedFiles.length === 0 && !scanning" class="empty-card">
       <el-empty description="请输入源路径并点击扫描目录按钮">
@@ -131,7 +194,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import {
@@ -140,10 +203,12 @@ import {
   Select,
   Close,
   Upload,
-  MagicStick
+  MagicStick,
+  Edit
 } from '@element-plus/icons-vue'
 import axios from 'axios'
 import ArchiveDialog from '@/components/ArchiveDialog.vue'
+import { startLocalRename, getLocalRenameStatus, cancelLocalRename } from '@/api/localRename'
 
 const router = useRouter()
 
@@ -438,6 +503,94 @@ const handleCreateTask = async () => {
       ElMessage.error('创建任务失败: ' + (error.response?.data?.message || error.message))
     }
   }
+}
+
+// ─── 本地格式化重命名 ──────────────────────────────────────────────────────────
+
+const localRenameVisible = ref(false)
+const localRenameTaskId  = ref(null)
+const logContainerRef    = ref(null)
+const localRenameStatus  = reactive({
+  phase: '', total: 0, processed: 0, renamed: 0, skipped: 0, failed: 0,
+  currentFile: '', logs: [], errorMessage: ''
+})
+
+let localRenamePollTimer = null
+
+const isRenameRunning = computed(() => localRenameStatus.phase === 'RUNNING')
+
+const renameProgress = computed(() => {
+  if (!localRenameStatus.total) return 0
+  return Math.round(localRenameStatus.processed / localRenameStatus.total * 100)
+})
+
+const renameProgressStatus = computed(() => {
+  if (localRenameStatus.phase === 'DONE') return localRenameStatus.failed > 0 ? 'warning' : 'success'
+  if (localRenameStatus.phase === 'ERROR') return 'exception'
+  return ''
+})
+
+// 日志自动滚动到底部
+watch(() => localRenameStatus.logs.length, () => {
+  nextTick(() => {
+    if (logContainerRef.value) {
+      logContainerRef.value.scrollTop = logContainerRef.value.scrollHeight
+    }
+  })
+})
+
+const handleLocalRename = async () => {
+  if (!taskForm.sourcePath) {
+    ElMessage.warning('请先输入源路径')
+    return
+  }
+  // 重置状态并打开对话框
+  Object.assign(localRenameStatus, {
+    phase: 'RUNNING', total: 0, processed: 0, renamed: 0, skipped: 0, failed: 0,
+    currentFile: '', logs: [], errorMessage: ''
+  })
+  localRenameTaskId.value = null
+  localRenameVisible.value = true
+
+  try {
+    const { data } = await startLocalRename(taskForm.sourcePath)
+    localRenameTaskId.value = data.taskId
+    startRenamePoll()
+  } catch (e) {
+    localRenameStatus.phase = 'ERROR'
+    localRenameStatus.errorMessage = e.message || '启动失败'
+  }
+}
+
+const startRenamePoll = () => {
+  stopRenamePoll()
+  localRenamePollTimer = setInterval(pollRenameStatus, 1000)
+}
+
+const stopRenamePoll = () => {
+  if (localRenamePollTimer) {
+    clearInterval(localRenamePollTimer)
+    localRenamePollTimer = null
+  }
+}
+
+const pollRenameStatus = async () => {
+  if (!localRenameTaskId.value) return
+  try {
+    const { data } = await getLocalRenameStatus(localRenameTaskId.value)
+    Object.assign(localRenameStatus, data)
+    if (['DONE', 'CANCELLED', 'ERROR'].includes(data.phase)) {
+      stopRenamePoll()
+    }
+  } catch (_) { /* ignore */ }
+}
+
+const handleCancelLocalRename = async () => {
+  if (!localRenameTaskId.value) return
+  try {
+    await cancelLocalRename(localRenameTaskId.value)
+  } catch (_) { /* ignore */ }
+  stopRenamePoll()
 }
 
 // ─── 归档功能 ─────────────────────────────────────────────────────────────────

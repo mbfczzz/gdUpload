@@ -108,20 +108,20 @@ app:
   rclone:
     path: /usr/bin/rclone
     config-path: /root/.config/rclone/rclone.conf
-    # 并发传输配置（针对13账号轮询 + 10Gbps带宽 + 28核128G服务器优化）
-    concurrent-transfers: 64  # 普通上传并发数（从32提升到64）
-    concurrent-transfers-resume: 80  # 断点续传并发数（更激进）
-    checkers: 128  # 文件检查并发数（普通上传）
-    checkers-resume: 160  # 文件检查并发数（断点续传）
-    multi-thread-streams: 24  # 单文件多线程数（普通上传）
-    multi-thread-streams-resume: 32  # 单文件多线程数（断点续传）
-    buffer-size: 512M  # 缓冲区大小
-    drive-chunk-size: 512M  # Google Drive上传块大小
+    # 并发传输配置（10Gbps + 56线程 + 128G内存 极限模式）
+    concurrent-transfers: 128         # 普通上传：单次 rclone 调用内并行文件数
+    concurrent-transfers-resume: 200  # 断点续传并行文件数
+    checkers: 256                     # 文件校验并发数（普通）
+    checkers-resume: 400              # 文件校验并发数（续传）
+    multi-thread-streams: 32          # 单文件并行分片数（10G口跑满核心参数）
+    multi-thread-streams-resume: 48   # 断点续传单文件并行分片数
+    buffer-size: 1G                   # 每个传输流内存缓冲（128G内存可给足）
+    drive-chunk-size: 512M            # GD分块大小（已是上限，保持）
     timeout: 3600
 
   # 上传配置
   upload:
-    concurrent-files: 5
+    concurrent-files: 20        # 同时上传文件数（20文件×32流=640并发连接）
     retry-times: 3
     check-interval: 60
     temp-dir: /tmp/gd-upload
@@ -154,7 +154,7 @@ app:
     enabled: true  # 是否启用Emby集成
     download-dir: /data/emby  # Emby下载目录（默认：/data/emby）
     upload-dir: /data/upload  # 上传目录（下载并上传功能使用，默认：/data/upload）
-    concurrent-downloads: 16  # 并发下载文件数（10Gbps+56核优化：16个文件同时下载）
+    concurrent-downloads: 32  # 并发下载文件数（10Gbps极限模式）
 
   # AI配置
   ai:

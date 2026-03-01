@@ -21,6 +21,8 @@ import com.gdupload.entity.GdAccount;
 import com.gdupload.mapper.EmbyDownloadHistoryMapper;
 import com.gdupload.service.*;
 import com.gdupload.util.DateTimeUtil;
+import com.gdupload.util.RcloneResult;
+import com.gdupload.util.RcloneUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -74,11 +76,15 @@ public class EmbyServiceImpl implements IEmbyService {
     @Autowired
     private EmbyProperties embyProperties;
 
+    @Autowired
+    private RcloneUtil rcloneUtil;
+
     @Value("${app.emby.download-dir:/data/emby}")
     private String defaultEmbyDownloadDir;
 
     // 下载任务的停止标志，key=taskId
     private final Map<Long, AtomicBoolean> downloadStopFlags = new ConcurrentHashMap<>();
+
 
     /**
      * 获取Emby下载目录（优先从数据库读取，否则使用默认值）
@@ -1001,32 +1007,38 @@ public class EmbyServiceImpl implements IEmbyService {
         }
 
         // 创建电视剧目录（使用统一的目录名生成逻辑）
-        String seriesDir = buildSeriesDirectory(series);
+        String seriesDir = buildSeriesDirectory(series, getEmbyDownloadDir());
 
         // 下载剧集到电视剧目录
         return downloadSingleItem(episode, seriesDir);
     }
 
     /**
-     * 构建电视剧目录路径（统一的目录名生成逻辑）
+     * 构建电视剧目录路径（使用默认下载目录）
      */
     private String buildSeriesDirectory(EmbyItem series) {
+        return buildSeriesDirectory(series, getEmbyDownloadDir());
+    }
+
+    /**
+     * 构建电视剧目录路径。
+     * 优先从 series.path 最后一段提取文件夹名（已含 tmdbid），
+     * 否则用 名称 (年份) [tmdbid=xxx] 格式构建。
+     */
+    private String buildSeriesDirectory(EmbyItem series, String baseDir) {
+        // 统一构建标准格式：名称 (年份) [tmdbid=xxx]
+        // TMDB ID 从 providerIds 或 path 中解析（extractTmdbId 已兼容两种格式）
         String seriesName = series.getName();
-        log.info("原始电视剧名称: {}", seriesName);
+        if (seriesName == null || seriesName.isEmpty()) seriesName = "unknown_series";
+        if (series.getProductionYear() != null) seriesName += " (" + series.getProductionYear() + ")";
+        String tmdbId = extractTmdbId(series);
+        if (tmdbId != null) seriesName += " [tmdbid=" + tmdbId + "]";
+        String folderName = seriesName;
 
-        if (seriesName == null || seriesName.isEmpty()) {
-            seriesName = "unknown_series";
-        }
-        if (series.getProductionYear() != null) {
-            seriesName += " (" + series.getProductionYear() + ")";
-        }
+        folderName = folderName.replaceAll("[\\\\/:*?\"<>|]", "_");
+        log.info("电视剧文件夹名: {}", folderName);
 
-        // 清理文件名中的非法字符
-        seriesName = seriesName.replaceAll("[\\\\/:*?\"<>|]", "_");
-        log.info("清理后的电视剧名称: {}", seriesName);
-
-        // 使用 Path 创建目录，确保UTF-8编码
-        java.nio.file.Path seriesDirPath = java.nio.file.Paths.get(getEmbyDownloadDir(), seriesName);
+        java.nio.file.Path seriesDirPath = java.nio.file.Paths.get(baseDir, folderName);
         String seriesDir = seriesDirPath.toString();
         log.info("完整目录路径: {}", seriesDir);
 
@@ -1045,124 +1057,171 @@ public class EmbyServiceImpl implements IEmbyService {
      * 下载电视剧的所有剧集
      */
     private Map<String, Object> downloadSeriesAllEpisodes(EmbyItem series) throws Exception {
-        log.info("开始下载电视剧所有剧集: {}", series.getName());
+        return downloadSeriesAllEpisodes(series, getEmbyDownloadDir());
+    }
+
+    private Map<String, Object> downloadSeriesAllEpisodes(EmbyItem series, String baseDir) throws Exception {
+        log.info("开始下载电视剧所有剧集（平铺模式）: {}", series.getName());
 
         // 获取所有剧集
         List<EmbyItem> episodes = getSeriesEpisodes(series.getId());
         if (episodes == null || episodes.isEmpty()) {
             throw new BusinessException("该电视剧没有剧集");
         }
-
         log.info("找到 {} 集", episodes.size());
 
-        // 创建电视剧目录（使用统一的目录名生成逻辑）
-        String seriesDir = buildSeriesDirectory(series);
+        // ── 构建系列名前缀：名称 (年份) [tmdbid=xxx] ──────────────────────────────
+        String seriesName = series.getName() != null ? series.getName() : "unknown_series";
+        String seriesPrefix = seriesName;
+        if (series.getProductionYear() != null) seriesPrefix += " (" + series.getProductionYear() + ")";
+        String tmdbId = extractTmdbId(series);
+        if (tmdbId != null) seriesPrefix += " [tmdbid=" + tmdbId + "]";
+        seriesPrefix = seriesPrefix.replaceAll("[\\\\/:*?\"<>|]", "_");
+        log.info("系列文件名前缀: {}", seriesPrefix);
 
-        // 下载每一集
-        int successCount = 0;
-        int failedCount = 0;
-        int skippedCount = 0;
-        List<String> successFiles = new ArrayList<>();
+        // ── 下载每一集 → 平铺到 baseDir，文件名含系列前缀 ──────────────────────────
+        int successCount = 0, failedCount = 0, skippedCount = 0;
+        List<String> successFiles   = new ArrayList<>();
+        List<String> downloadedFilePaths = new ArrayList<>();
         List<Map<String, String>> failedEpisodes = new ArrayList<>();
 
         for (int i = 0; i < episodes.size(); i++) {
             EmbyItem episode = episodes.get(i);
             log.info("下载进度: [{}/{}] {}", i + 1, episodes.size(), episode.getName());
 
-            // 检查是否有媒体源，如果没有，尝试重新获取详情
+            // 无媒体源时尝试重新拉取详情
             if (episode.getMediaSources() == null || episode.getMediaSources().isEmpty()) {
-                log.warn("剧集 {} 没有媒体源信息，尝试重新获取详情...", episode.getName());
-                log.info("剧集ID: {}, 当前媒体源: {}", episode.getId(), episode.getMediaSources());
+                log.warn("剧集 {} 无媒体源，重新获取详情...", episode.getName());
                 try {
-                    EmbyItem detailedEpisode = getItemDetail(episode.getId());
-                    if (detailedEpisode != null) {
-                        log.info("重新获取的剧集详情 - 媒体源数量: {}",
-                            detailedEpisode.getMediaSources() != null ? detailedEpisode.getMediaSources().size() : 0);
-                        if (detailedEpisode.getMediaSources() != null && !detailedEpisode.getMediaSources().isEmpty()) {
-                            log.info("重新获取成功，找到媒体源");
-                            episode = detailedEpisode;
-                        } else {
-                            log.warn("⊘ 跳过（重新获取后仍无媒体源）: {}", episode.getName());
-                            skippedCount++;
-                            Map<String, String> failedInfo = new HashMap<>();
-                            failedInfo.put("name", episode.getName());
-                            failedInfo.put("reason", "无媒体源");
-                            failedEpisodes.add(failedInfo);
-                            continue;
-                        }
+                    EmbyItem detail = getItemDetail(episode.getId());
+                    if (detail != null && detail.getMediaSources() != null && !detail.getMediaSources().isEmpty()) {
+                        episode = detail;
                     } else {
-                        log.warn("⊘ 跳过（重新获取返回null）: {}", episode.getName());
                         skippedCount++;
-                        Map<String, String> failedInfo = new HashMap<>();
-                        failedInfo.put("name", episode.getName());
-                        failedInfo.put("reason", "获取详情返回null");
-                        failedEpisodes.add(failedInfo);
+                        Map<String, String> f = new HashMap<>();
+                        f.put("name", episode.getName()); f.put("reason", "无媒体源");
+                        failedEpisodes.add(f);
                         continue;
                     }
                 } catch (Exception e) {
-                    log.error("重新获取详情失败: {}", e.getMessage());
                     skippedCount++;
-                    Map<String, String> failedInfo = new HashMap<>();
-                    failedInfo.put("name", episode.getName());
-                    failedInfo.put("reason", "获取详情失败: " + e.getMessage());
-                    failedEpisodes.add(failedInfo);
+                    Map<String, String> f = new HashMap<>();
+                    f.put("name", episode.getName()); f.put("reason", "获取详情失败: " + e.getMessage());
+                    failedEpisodes.add(f);
                     continue;
                 }
             }
 
+            // ── 构建平铺文件名：系列前缀 + S01E01 + 集标题 ──────────────────────
+            String ext = getMediaExtension(episode);
+            String episodePart;
+            if (episode.getParentIndexNumber() != null && episode.getIndexNumber() != null) {
+                String epTitle = episode.getName() != null ? " " + episode.getName() : "";
+                episodePart = String.format(" S%02dE%02d%s",
+                        episode.getParentIndexNumber(), episode.getIndexNumber(), epTitle);
+            } else if (episode.getIndexNumber() != null) {
+                episodePart = String.format(" E%02d", episode.getIndexNumber());
+            } else {
+                episodePart = episode.getName() != null ? " " + episode.getName() : "";
+            }
+            String flatFilename = (seriesPrefix + episodePart).replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
+            log.info("平铺文件名: {}", flatFilename);
+
             try {
-                Map<String, Object> result = downloadSingleItem(episode, seriesDir);
+                Map<String, Object> result = downloadSingleItem(episode, baseDir, flatFilename);
                 if (result != null && Boolean.TRUE.equals(result.get("success"))) {
                     successCount++;
-                    successFiles.add((String) result.get("filename"));
-                    log.info("✓ 下载成功: {}", episode.getName());
+                    String filePath = (String) result.get("filePath");
+                    successFiles.add(flatFilename);
+                    downloadedFilePaths.add(filePath);
+                    log.info("✓ 下载成功: {}", flatFilename);
                 } else {
                     failedCount++;
-                    Map<String, String> failedInfo = new HashMap<>();
-                    failedInfo.put("name", episode.getName());
-                    failedInfo.put("reason", "下载失败");
-                    failedEpisodes.add(failedInfo);
-                    log.warn("✗ 下载失败: {}", episode.getName());
+                    Map<String, String> f = new HashMap<>();
+                    f.put("name", episode.getName()); f.put("reason", "下载失败");
+                    failedEpisodes.add(f);
                 }
             } catch (Exception e) {
                 failedCount++;
-                Map<String, String> failedInfo = new HashMap<>();
-                failedInfo.put("name", episode.getName());
-                failedInfo.put("reason", e.getMessage());
-                failedEpisodes.add(failedInfo);
-                log.error("✗ 下载异常: {}, 错误: {}", episode.getName(), e.getMessage());
+                Map<String, String> f = new HashMap<>();
+                f.put("name", episode.getName()); f.put("reason", e.getMessage());
+                failedEpisodes.add(f);
+                log.error("✗ 下载异常: {}", e.getMessage());
             }
         }
 
-        log.info("电视剧下载完成！成功: {}, 失败: {}, 跳过: {}", successCount, failedCount, skippedCount);
+        log.info("电视剧平铺下载完成！成功: {}, 失败: {}, 跳过: {}", successCount, failedCount, skippedCount);
 
-        // 保存 Series 的下载历史记录
-        if (successCount > 0) {
-            // 如果有至少一集下载成功，标记 Series 为成功
-            String seriesStatus = (failedCount == 0 && skippedCount == 0) ? "success" : "success";
-            saveDownloadHistory(series.getId(), seriesStatus, seriesDir, 0L,
-                String.format("下载了 %d 集，成功 %d 集，失败 %d 集", episodes.size(), successCount, failedCount + skippedCount));
-            log.info("保存 Series 下载历史记录: seriesId={}, status={}", series.getId(), seriesStatus);
-        } else {
-            // 如果一集都没下载成功，标记 Series 为失败
-            saveDownloadHistory(series.getId(), "failed", seriesDir, 0L,
-                String.format("下载失败，共 %d 集，失败 %d 集，跳过 %d 集", episodes.size(), failedCount, skippedCount));
-            log.info("保存 Series 下载历史记录: seriesId={}, status=failed", series.getId());
-        }
+        String firstFilePath = downloadedFilePaths.isEmpty() ? baseDir : downloadedFilePaths.get(0);
+        saveDownloadHistory(series.getId(), successCount > 0 ? "success" : "failed", firstFilePath, 0L,
+                String.format("平铺下载 %d 集，成功 %d，失败 %d", episodes.size(), successCount, failedCount + skippedCount));
 
-        // 构建返回结果
         Map<String, Object> result = new HashMap<>();
         result.put("success", failedCount == 0 && skippedCount == 0);
         result.put("type", "series");
         result.put("seriesName", series.getName());
-        result.put("seriesDir", seriesDir);
+        result.put("downloadedFilePaths", downloadedFilePaths);   // 平铺文件路径列表
         result.put("totalEpisodes", episodes.size());
         result.put("successCount", successCount);
         result.put("failedCount", failedCount + skippedCount);
         result.put("successFiles", successFiles);
         result.put("failedEpisodes", failedEpisodes);
-
         return result;
+    }
+
+    /**
+     * 从 EmbyItem 中提取 TMDB ID。
+     * 优先读 providerIds，否则解析 path 中的 {tmdbid-xxx} / [tmdbid=xxx]。
+     */
+    private String extractTmdbId(EmbyItem item) {
+        if (item.getProviderIds() != null) {
+            String tmdbId = item.getProviderIds().get("Tmdb");
+            if (tmdbId != null && !tmdbId.isEmpty()) return tmdbId;
+        }
+        if (item.getPath() != null) {
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("[{\\[]tmdbid[-=](\\d+)[}\\]]", java.util.regex.Pattern.CASE_INSENSITIVE)
+                .matcher(item.getPath());
+            if (m.find()) return m.group(1);
+        }
+        return null;
+    }
+
+    /**
+     * 获取媒体文件的真实扩展名（含点号）。
+     * 优先从 mediaSource.container 读取，其次从 path 解析（忽略 .strm）。
+     */
+    private String getMediaExtension(EmbyItem item) {
+        if (item.getMediaSources() != null && !item.getMediaSources().isEmpty()) {
+            String container = item.getMediaSources().get(0).getContainer();
+            if (container != null && !container.isEmpty() && !container.equalsIgnoreCase("strm")) {
+                return "." + container.toLowerCase();
+            }
+        }
+        if (item.getPath() != null) {
+            int lastDot = item.getPath().lastIndexOf('.');
+            if (lastDot > 0) {
+                String ext = item.getPath().substring(lastDot + 1).toLowerCase();
+                if (!ext.equals("strm") && ext.length() <= 5) return "." + ext;
+            }
+        }
+        return ".mp4";
+    }
+
+    /**
+     * 从 episode.path 的最后一段提取文件名，将 .strm 替换为真实扩展名。
+     * 如果 path 中已有 S01E01 等标准命名则直接沿用。
+     */
+    private String extractEpisodeFilenameFromPath(EmbyItem episode, String realExt) {
+        if (episode.getPath() == null || episode.getPath().isEmpty()) return null;
+        String path = episode.getPath();
+        int lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        if (lastSlash < 0 || lastSlash >= path.length() - 1) return null;
+        String filename = path.substring(lastSlash + 1);
+        if (filename.toLowerCase().endsWith(".strm")) {
+            filename = filename.substring(0, filename.length() - 5) + realExt;
+        }
+        return filename;
     }
 
     /**
@@ -1176,6 +1235,13 @@ public class EmbyServiceImpl implements IEmbyService {
      * 下载单个媒体项到指定目录
      */
     private Map<String, Object> downloadSingleItem(EmbyItem item, String downloadDir) throws Exception {
+        return downloadSingleItem(item, downloadDir, null);
+    }
+
+    /**
+     * 下载单个媒体项到指定目录，filenameOverride 不为空时强制使用该文件名（用于平铺命名）
+     */
+    private Map<String, Object> downloadSingleItem(EmbyItem item, String downloadDir, String filenameOverride) throws Exception {
         String accessToken = embyAuthService.getAccessToken();
         String userId = embyAuthService.getUserId();
         String baseUrl = embyAuthService.getServerUrl();
@@ -1183,22 +1249,49 @@ public class EmbyServiceImpl implements IEmbyService {
             baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
         }
 
+        // 获取真实扩展名（从 mediaSource 或 path 推断）
+        String ext = getMediaExtension(item);
+
         // 构建文件名
-        String filename = item.getName();
-        log.info("原始文件名: {}", filename);
-
-        if (filename == null || filename.isEmpty()) {
-            filename = "unknown";
+        String filename;
+        if (filenameOverride != null && !filenameOverride.isEmpty()) {
+            // 平铺模式：外部已构建完整文件名（含系列前缀+扩展名）
+            filename = filenameOverride;
+            log.info("使用覆盖文件名: {}", filename);
+        } else if ("Episode".equals(item.getType())) {
+            if (item.getParentIndexNumber() != null && item.getIndexNumber() != null) {
+                // Emby 提供了可靠的季集号，直接构建标准格式 S01E04 Title.ext
+                String epTitle = item.getName() != null ? item.getName() : "";
+                String nameBase = String.format("S%02dE%02d%s",
+                        item.getParentIndexNumber(), item.getIndexNumber(),
+                        epTitle.isEmpty() ? "" : " " + epTitle);
+                filename = nameBase.replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
+                log.info("构建标准剧集文件名: {}", filename);
+            } else {
+                // 降级：从 path 提取原始文件名
+                String pathFilename = extractEpisodeFilenameFromPath(item, ext);
+                if (pathFilename != null && !pathFilename.isEmpty()) {
+                    filename = pathFilename.replaceAll("[\\\\/:*?\"<>|]", "_");
+                    log.info("从path提取剧集文件名(无季集号): {}", filename);
+                } else {
+                    filename = (item.getName() != null ? item.getName() : "unknown")
+                            .replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
+                }
+            }
+            // 不创建 Season 子目录，剧集直接放在 SeriesFolder 下，由刮削模块负责归档整理
+        } else {
+            // 电影或其他：名称 (年份) [tmdbid=xxx].ext
+            String nameBase = item.getName() != null ? item.getName() : "unknown";
+            if (item.getProductionYear() != null) {
+                nameBase += " (" + item.getProductionYear() + ")";
+            }
+            String tmdbId = extractTmdbId(item);
+            if (tmdbId != null) {
+                nameBase += " [tmdbid=" + tmdbId + "]";
+            }
+            filename = nameBase.replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
+            log.info("电影/其他类型文件名: {}", filename);
         }
-        if (item.getProductionYear() != null && "Movie".equals(item.getType())) {
-            filename += " (" + item.getProductionYear() + ")";
-        }
-
-        // 清理文件名中的非法字符（只替换 Windows/Linux 文件系统不允许的字符）
-        filename = filename.replaceAll("[\\\\/:*?\"<>|]", "_");
-        log.info("清理后的文件名: {}", filename);
-
-        filename += ".mp4";
         log.info("最终文件名: {}", filename);
 
         // 创建下载目录
@@ -1224,8 +1317,8 @@ public class EmbyServiceImpl implements IEmbyService {
         int counter = 1;
         while (java.nio.file.Files.exists(targetPath)) {
             String nameWithoutExt = filename.substring(0, filename.lastIndexOf("."));
-            String ext = filename.substring(filename.lastIndexOf("."));
-            String newFilename = nameWithoutExt + "_" + counter + ext;
+            String fileExt = filename.substring(filename.lastIndexOf("."));
+            String newFilename = nameWithoutExt + "_" + counter + fileExt;
             targetPath = dirPath.resolve(newFilename);
             filePath = targetPath.toString();
             counter++;
@@ -1586,6 +1679,7 @@ public class EmbyServiceImpl implements IEmbyService {
             log.info("========================================");
 
             ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT_DOWNLOADS);
+
             CountDownLatch latch = new CountDownLatch(itemIds.size());
 
             try {
@@ -1742,6 +1836,7 @@ public class EmbyServiceImpl implements IEmbyService {
             } finally {
                 executor.shutdownNow();
                 downloadStopFlags.remove(finalTaskId);
+
             }
         }, "Emby-BatchDownload-" + taskId).start();
 
@@ -1788,24 +1883,27 @@ public class EmbyServiceImpl implements IEmbyService {
     }
 
     /**
-     * 下载完成后更新FileInfo的实际文件路径和相对路径
+     * 下载完成后更新FileInfo的实际文件路径和相对路径（使用默认下载目录作为基准）
      */
     private void updateFileInfoAfterDownload(FileInfo fileInfo, Map<String, Object> downloadResult) {
+        updateFileInfoAfterDownload(fileInfo, downloadResult, getEmbyDownloadDir());
+    }
+
+    /**
+     * 下载完成后更新FileInfo的实际文件路径和相对路径。
+     * baseDir 为本次下载操作的根目录（直接下载用 embyDownloadDir，下载上传用 uploadDir），
+     * 用于计算文件相对路径（如单集在 SeriesFolder 内时，relativePath = SeriesFolder 名）。
+     */
+    private void updateFileInfoAfterDownload(FileInfo fileInfo, Map<String, Object> downloadResult, String baseDir) {
         try {
             if ("series".equals(downloadResult.get("type"))) {
-                // 电视剧：更新为剧集目录路径
+                // 电视剧：relativePath 设为剧集文件夹名
                 String seriesDir = (String) downloadResult.get("seriesDir");
                 if (seriesDir != null) {
-                    // 提取剧集文件夹名（例如：{embyDownloadDir}/重庆遇见爱 (2024) → 重庆遇见爱 (2024)）
                     java.nio.file.Path seriesDirPath = java.nio.file.Paths.get(seriesDir);
                     String seriesFolderName = seriesDirPath.getFileName().toString();
-
-                    // 设置相对路径为剧集文件夹名
                     fileInfo.setRelativePath(seriesFolderName);
-
-                    // filePath设置为剧集目录（后续上传时会扫描这个目录下的所有文件）
                     fileInfo.setFilePath(seriesDir);
-
                     log.info("更新电视剧FileInfo: seriesDir={}, relativePath={}", seriesDir, seriesFolderName);
                 }
             } else {
@@ -1815,33 +1913,29 @@ public class EmbyServiceImpl implements IEmbyService {
                 String downloadDir = (String) downloadResult.get("downloadDir");
 
                 if (filePath != null && filename != null) {
-                    // 更新实际文件路径和文件名
                     fileInfo.setFilePath(filePath);
                     fileInfo.setFileName(filename);
 
-                    // 如果下载目录不是根目录，提取相对路径
-                    String embyDownloadDir = getEmbyDownloadDir();
-                    if (downloadDir != null && !downloadDir.equals(embyDownloadDir)) {
-                        // 提取相对于下载根目录的路径
-                        String downloadDirPrefix = embyDownloadDir + "/";
-                        if (downloadDir.startsWith(downloadDirPrefix)) {
-                            String relativePath = downloadDir.substring(downloadDirPrefix.length());
+                    // 若文件在 baseDir 的子目录下（如 SeriesFolder），提取相对路径
+                    String normalizedBase = baseDir.replace('\\', '/');
+                    String normalizedDownloadDir = downloadDir != null ? downloadDir.replace('\\', '/') : null;
+                    if (normalizedDownloadDir != null && !normalizedDownloadDir.equals(normalizedBase)) {
+                        String prefix = normalizedBase.endsWith("/") ? normalizedBase : normalizedBase + "/";
+                        if (normalizedDownloadDir.startsWith(prefix)) {
+                            String relativePath = normalizedDownloadDir.substring(prefix.length());
                             fileInfo.setRelativePath(relativePath);
                             log.info("更新单文件FileInfo: filePath={}, relativePath={}", filePath, relativePath);
                         } else {
-                            // 文件直接在根目录
                             fileInfo.setRelativePath("");
                             log.info("更新单文件FileInfo: filePath={}, relativePath=空（根目录）", filePath);
                         }
                     } else {
-                        // 文件直接在根目录
                         fileInfo.setRelativePath("");
                         log.info("更新单文件FileInfo: filePath={}, relativePath=空（根目录）", filePath);
                     }
                 }
             }
 
-            // 保存更新
             fileInfoService.updateById(fileInfo);
         } catch (Exception e) {
             log.error("更新FileInfo失败: fileInfoId={}, error={}", fileInfo.getId(), e.getMessage(), e);
@@ -1963,6 +2057,7 @@ public class EmbyServiceImpl implements IEmbyService {
 
             // 创建固定大小的线程池
             ExecutorService executor = Executors.newFixedThreadPool(concurrentDownloads);
+
             CountDownLatch latch = new CountDownLatch(itemIds.size());
 
             try {
@@ -1984,53 +2079,146 @@ public class EmbyServiceImpl implements IEmbyService {
                             log.info("[{}/{}] 开始处理: {}", index + 1, itemIds.size(), currentFile.getFileName());
 
                             try {
-                                // 步骤1: 下载到上传目录
-                                log.info("[{}/{}] 步骤1: 下载文件...", index + 1, itemIds.size());
-                                fileInfoService.updateFileStatus(currentFile.getId(), 1, "正在下载");
-                                webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, "正在下载");
-
                                 EmbyItem item = getItemDetail(itemId);
                                 if (item == null) {
                                     throw new BusinessException("媒体项不存在: " + itemId);
                                 }
 
-                                // 下载到上传目录
-                                Map<String, Object> downloadResult = downloadSingleItem(item, getUploadDir());
+                                String uploadDir = getUploadDir();
+                                boolean isSeries = "Series".equals(item.getType());
 
-                                if (downloadResult == null || !Boolean.TRUE.equals(downloadResult.get("success"))) {
-                                    throw new BusinessException("下载失败");
+                                if (isSeries) {
+                                    // 电视剧：交错模式 —— 下完一集立即上传，减少等待和本地磁盘占用
+                                    fileInfoService.updateFileStatus(currentFile.getId(), 1, "正在下载并上传");
+                                    webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, "正在下载并上传");
+
+                                    // 提前获取账号（整个 series 共用一个账号）
+                                    GdAccount account = gdAccountService.getNextAvailableAccountInRotation(finalTaskId, currentFile.getFileSize());
+                                    if (account == null) {
+                                        throw new BusinessException("没有可用的账号");
+                                    }
+                                    log.info("[{}/{}] 使用账号: {}", index + 1, itemIds.size(), account.getAccountName());
+
+                                    // 获取剧集列表
+                                    List<EmbyItem> episodes = getSeriesEpisodes(item.getId());
+                                    if (episodes == null || episodes.isEmpty()) {
+                                        throw new BusinessException("该电视剧没有剧集");
+                                    }
+                                    log.info("[{}/{}] 共 {} 集，开始交错下载上传", index + 1, itemIds.size(), episodes.size());
+
+                                    // 构建系列文件名前缀
+                                    String seriesName = item.getName() != null ? item.getName() : "unknown_series";
+                                    String seriesPrefix = seriesName;
+                                    if (item.getProductionYear() != null) seriesPrefix += " (" + item.getProductionYear() + ")";
+                                    String tmdbIdStr = extractTmdbId(item);
+                                    if (tmdbIdStr != null) seriesPrefix += " [tmdbid=" + tmdbIdStr + "]";
+                                    seriesPrefix = seriesPrefix.replaceAll("[\\\\/:*?\"<>|]", "_");
+                                    log.info("[{}/{}] 系列文件名前缀: {}", index + 1, itemIds.size(), seriesPrefix);
+
+                                    String base = gdTargetPath.endsWith("/") ? gdTargetPath : gdTargetPath + "/";
+                                    int epSuccess = 0;
+
+                                    for (int ei = 0; ei < episodes.size(); ei++) {
+                                        EmbyItem episode = episodes.get(ei);
+                                        log.info("[{}/{}] [{}/{}集] 下载: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), episode.getName());
+
+                                        // 无媒体源时重新拉取详情
+                                        if (episode.getMediaSources() == null || episode.getMediaSources().isEmpty()) {
+                                            try {
+                                                EmbyItem detail = getItemDetail(episode.getId());
+                                                if (detail != null && detail.getMediaSources() != null && !detail.getMediaSources().isEmpty()) {
+                                                    episode = detail;
+                                                } else {
+                                                    log.warn("[{}/{}] 剧集 {} 无媒体源，跳过", index + 1, itemIds.size(), episode.getName());
+                                                    continue;
+                                                }
+                                            } catch (Exception e) {
+                                                log.warn("[{}/{}] 获取剧集详情失败: {}", index + 1, itemIds.size(), e.getMessage());
+                                                continue;
+                                            }
+                                        }
+
+                                        // 构建平铺文件名
+                                        String ext = getMediaExtension(episode);
+                                        String episodePart;
+                                        if (episode.getParentIndexNumber() != null && episode.getIndexNumber() != null) {
+                                            String epTitle = episode.getName() != null ? " " + episode.getName() : "";
+                                            episodePart = String.format(" S%02dE%02d%s", episode.getParentIndexNumber(), episode.getIndexNumber(), epTitle);
+                                        } else if (episode.getIndexNumber() != null) {
+                                            episodePart = String.format(" E%02d", episode.getIndexNumber());
+                                        } else {
+                                            episodePart = episode.getName() != null ? " " + episode.getName() : "";
+                                        }
+                                        String flatFilename = (seriesPrefix + episodePart).replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
+
+                                        // 下载单集后立即上传
+                                        try {
+                                            Map<String, Object> epResult = downloadSingleItem(episode, uploadDir, flatFilename);
+                                            if (epResult == null || !Boolean.TRUE.equals(epResult.get("success"))) {
+                                                log.warn("[{}/{}] [{}/{}集] 下载失败: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), flatFilename);
+                                                continue;
+                                            }
+                                            String filePath = (String) epResult.get("filePath");
+                                            if (filePath == null) {
+                                                log.warn("[{}/{}] [{}/{}集] 下载结果无filePath，跳过: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), flatFilename);
+                                                continue;
+                                            }
+                                            log.info("[{}/{}] [{}/{}集] 下载成功，立即上传", index + 1, itemIds.size(), ei + 1, episodes.size());
+                                            fileInfoService.updateFileStatus(currentFile.getId(), 1,
+                                                String.format("上传 %d/%d", ei + 1, episodes.size()));
+
+                                            String remoteFilePath = base + flatFilename;
+                                            RcloneResult uploadResult = rcloneUtil.uploadSingleFileTo(
+                                                filePath, account.getRcloneConfigName(), remoteFilePath,
+                                                line -> log.debug("rclone: {}", line));
+                                            if (uploadResult.isSuccess()) {
+                                                epSuccess++;
+                                                log.info("[{}/{}] [{}/{}集] 上传成功: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), remoteFilePath);
+                                            } else {
+                                                log.warn("[{}/{}] [{}/{}集] 上传失败: {} err={}", index + 1, itemIds.size(), ei + 1, episodes.size(),
+                                                    flatFilename, uploadResult.getErrorMessage());
+                                            }
+                                        } catch (Exception e) {
+                                            log.error("[{}/{}] [{}/{}集] 处理异常: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), e.getMessage());
+                                        }
+                                    }
+
+                                    if (epSuccess == 0) {
+                                        throw new BusinessException("所有剧集下载上传失败");
+                                    }
+                                    log.info("[{}/{}] 电视剧交错下载上传完成: 成功 {}/{} 集", index + 1, itemIds.size(), epSuccess, episodes.size());
+
+                                    // 更新 FileInfo 路径（series 用 gdTargetPath 标记）
+                                    currentFile.setFilePath(gdTargetPath);
+                                    fileInfoService.updateById(currentFile);
+
+                                } else {
+                                    // 电影/单集：步骤1 下载，步骤2 上传
+                                    log.info("[{}/{}] 步骤1: 下载文件...", index + 1, itemIds.size());
+                                    fileInfoService.updateFileStatus(currentFile.getId(), 1, "正在下载");
+                                    webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, "正在下载");
+
+                                    Map<String, Object> downloadResult = downloadSingleItem(item, uploadDir);
+                                    if (downloadResult == null || !Boolean.TRUE.equals(downloadResult.get("success"))) {
+                                        throw new BusinessException("下载失败");
+                                    }
+                                    log.info("[{}/{}] 下载成功", index + 1, itemIds.size());
+
+                                    updateFileInfoAfterDownload(currentFile, downloadResult, uploadDir);
+                                    log.info("[{}/{}] FileInfo更新完成: filePath={}, relativePath={}",
+                                        index + 1, itemIds.size(), currentFile.getFilePath(), currentFile.getRelativePath());
+
+                                    log.info("[{}/{}] 步骤2: 上传到Google Drive...", index + 1, itemIds.size());
+                                    fileInfoService.updateFileStatus(currentFile.getId(), 1, "正在上传");
+                                    webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, "正在上传");
+
+                                    GdAccount account = gdAccountService.getNextAvailableAccountInRotation(finalTaskId, currentFile.getFileSize());
+                                    if (account == null) {
+                                        throw new BusinessException("没有可用的账号");
+                                    }
+                                    log.info("[{}/{}] 使用账号: {}", index + 1, itemIds.size(), account.getAccountName());
+                                    uploadService.uploadFileInternal(finalTaskId, currentFile.getId(), account.getId());
                                 }
-
-                                String filePath = (String) downloadResult.get("filePath");
-                                log.info("[{}/{}] 下载成功: {}", index + 1, itemIds.size(), filePath);
-
-                                // 更新FileInfo的路径信息
-                                log.info("[{}/{}] 开始更新FileInfo...", index + 1, itemIds.size());
-                                currentFile.setFilePath(filePath);
-                                currentFile.setFileName((String) downloadResult.get("filename"));
-                                Long fileSize = (Long) downloadResult.get("size");
-                                if (fileSize != null) {
-                                    currentFile.setFileSize(fileSize);
-                                }
-                                log.info("[{}/{}] FileInfo更新内容: filePath={}, fileName={}, fileSize={}",
-                                    index + 1, itemIds.size(), filePath, currentFile.getFileName(), fileSize);
-                                fileInfoService.updateById(currentFile);
-                                log.info("[{}/{}] FileInfo更新成功", index + 1, itemIds.size());
-
-                                // 步骤2: 上传到Google Drive
-                                log.info("[{}/{}] 步骤2: 上传到Google Drive...", index + 1, itemIds.size());
-                                fileInfoService.updateFileStatus(currentFile.getId(), 1, "正在上传");
-                                webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, "正在上传");
-
-                                // 获取可用账号
-                                GdAccount account = gdAccountService.getNextAvailableAccountInRotation(finalTaskId, currentFile.getFileSize());
-                                if (account == null) {
-                                    throw new BusinessException("没有可用的账号");
-                                }
-                                log.info("[{}/{}] 使用账号: {}", index + 1, itemIds.size(), account.getAccountName());
-
-                                // 调用上传服务（这会创建上传任务并执行）
-                                uploadService.uploadFileInternal(finalTaskId, currentFile.getId(), account.getId());
 
                                 log.info("[{}/{}] 上传成功!", index + 1, itemIds.size());
                                 successCount.incrementAndGet();
@@ -2039,6 +2227,9 @@ public class EmbyServiceImpl implements IEmbyService {
                                 webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 2, "完成");
 
                                 // 保存下载历史（标记为download_upload类型）
+                                // currentFile.filePath 已在各分支内设置好（series=gdTargetPath，movie=实际文件路径）
+                                String recordPath = currentFile.getFilePath();
+                                Long fileSize = currentFile.getFileSize();
                                 EmbyDownloadHistory history = new EmbyDownloadHistory();
                                 EmbyConfig config = embyConfigService.getDefaultConfig();
                                 if (config != null) {
@@ -2046,7 +2237,7 @@ public class EmbyServiceImpl implements IEmbyService {
                                     history.setEmbyConfigId(config.getId());
                                     history.setDownloadStatus("success");
                                     history.setTaskType("download_upload");
-                                    history.setFilePath(filePath);
+                                    history.setFilePath(recordPath);
                                     history.setFileSize(fileSize);
                                     history.setCreateTime(LocalDateTime.now());
                                     history.setUpdateTime(LocalDateTime.now());
@@ -2132,6 +2323,7 @@ public class EmbyServiceImpl implements IEmbyService {
                 webSocketService.pushTaskStatus(finalTaskId, 3, "任务异常");
             } finally {
                 downloadStopFlags.remove(finalTaskId);
+
             }
         }, "Emby-DownloadUpload-" + taskId).start();
 

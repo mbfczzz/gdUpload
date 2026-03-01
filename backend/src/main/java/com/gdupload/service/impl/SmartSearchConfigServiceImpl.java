@@ -87,6 +87,7 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         String aiModel = null;
         Object aiMaxTokens = null;
         Object aiTemperature = null;
+        Boolean archiveAiEnabled = null;
 
         // TMDB配置变量
         Boolean tmdbEnabled = null;
@@ -144,6 +145,9 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
                         }
                         if (data.containsKey("aiTemperature")) {
                             aiTemperature = data.get("aiTemperature");
+                        }
+                        if (data.containsKey("archiveAiEnabled")) {
+                            archiveAiEnabled = (Boolean) data.get("archiveAiEnabled");
                         }
                         break;
                     case "search_config":
@@ -241,6 +245,9 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
         }
         if (aiTemperature != null) {
             fullConfig.put("aiTemperature", aiTemperature);
+        }
+        if (archiveAiEnabled != null) {
+            fullConfig.put("archiveAiEnabled", archiveAiEnabled);
         }
         if (maxValidationCount != null) {
             fullConfig.put("maxValidationCount", maxValidationCount);
@@ -353,6 +360,9 @@ public class SmartSearchConfigServiceImpl implements ISmartSearchConfigService {
             }
             if (configData.containsKey("aiTemperature")) {
                 aiConfig.put("aiTemperature", configData.get("aiTemperature"));
+            }
+            if (configData.containsKey("archiveAiEnabled")) {
+                aiConfig.put("archiveAiEnabled", configData.get("archiveAiEnabled"));
             }
             if (!aiConfig.isEmpty()) {
                 SmartSearchConfig config = new SmartSearchConfig();

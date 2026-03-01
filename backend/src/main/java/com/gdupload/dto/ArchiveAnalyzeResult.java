@@ -52,4 +52,10 @@ public class ArchiveAnalyzeResult {
 
     /** 是否疑似成人内容（正则或AI判断） */
     private Boolean isAdult;
+
+    /** 集标题（来自 TMDB，用于格式化重命名时补充） */
+    private String episodeTitle;
+
+    /** 文件名中直接提取的 TMDB ID（来自 [tmdbid=xxx] 标签），可跳过 TMDB 搜索步骤 */
+    private Integer tmdbId;
 }

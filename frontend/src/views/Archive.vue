@@ -230,6 +230,15 @@
             <span v-else class="text-muted">—</span>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'failed' || row.status === 'manual_required'"
+              type="warning" link size="small"
+              @click="retryArchive(row)"
+            >手动归档</el-button>
+          </template>
+        </el-table-column>
       </el-table>
 
       <div class="pagination-bar">
@@ -339,6 +348,15 @@
           </el-table-column>
           <el-table-column label="时间" width="140">
             <template #default="{ row }">{{ formatTime(row.createTime) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="90" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                v-if="row.status === 'failed' || row.status === 'manual_required'"
+                type="warning" link size="small"
+                @click="retryArchive(row)"
+              >手动归档</el-button>
+            </template>
           </el-table-column>
         </el-table>
 
@@ -546,6 +564,17 @@ function openArchive() {
 function onArchived() {
   inputPath.value = ''
   loadHistory()
+  // 若批量详情抽屉打开，也刷新详情
+  if (detailDrawerVisible.value) loadBatchDetail()
+}
+
+/** 从历史记录重新发起手动归档 */
+function retryArchive(row) {
+  currentFile.value = {
+    fileName: row.originalFilename,
+    filePath: row.originalPath || ''
+  }
+  dialogVisible.value = true
 }
 
 // ─── 归档历史 ─────────────────────────────────────────────────────────────────

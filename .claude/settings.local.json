@@ -24,7 +24,9 @@
       "Bash(git commit:*)",
       "Bash(chmod:*)",
       "WebFetch(domain:github.com)",
-      "Bash(gh repo view:*)"
+      "Bash(gh repo view:*)",
+      "Bash(wc:*)",
+      "Bash(./mvnw compile:*)"
     ]
   }
 }

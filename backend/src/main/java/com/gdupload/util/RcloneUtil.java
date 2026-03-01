@@ -122,6 +122,43 @@ public class RcloneUtil {
     }
 
     /**
+     * 上传单个文件到远端指定路径（含文件名）。
+     * 使用 rclone moveto，专为单文件设计；targetFilePath 必须包含目标文件名，
+     * 例如 "/GD上传目录/SeriesName S01E01.mp4"。
+     * 与 uploadFile (rclone move) 不同，moveto 不会把源路径当目录遍历，适合单文件上传。
+     */
+    public RcloneResult uploadSingleFileTo(String localFilePath, String remoteName, String targetFilePath, Consumer<String> logConsumer) {
+        List<String> command = new ArrayList<>();
+        command.add(rclonePath);
+        command.add("moveto");
+        command.add(localFilePath);
+        command.add(remoteName + ":" + targetFilePath);
+        command.add("--config");
+        command.add(rcloneConfigPath);
+
+        command.add("--buffer-size");
+        command.add(bufferSize);
+        command.add("--drive-chunk-size");
+        command.add(driveChunkSize);
+        command.add("--drive-upload-cutoff");
+        command.add(driveChunkSize);
+        command.add("--multi-thread-streams");
+        command.add(String.valueOf(multiThreadStreams));
+        command.add("--ignore-checksum");
+        command.add("--timeout");
+        command.add("30m");
+        command.add("--contimeout");
+        command.add("120s");
+        command.add("--retries");
+        command.add("3");
+        command.add("--low-level-retries");
+        command.add("10");
+        command.add("-v");
+
+        return executeCommand(command, logConsumer);
+    }
+
+    /**
      * 使用rclone move上传（支持断点续传，上传成功后删除源文件）
      *
      * @param sourcePath 源文件路径
@@ -236,12 +273,19 @@ public class RcloneUtil {
             String output = IoUtil.read(reader);
             process.waitFor();
 
-            // 解析JSON输出获取大小
-            // 简化处理，实际应使用JSON库解析
+            // 解析JSON输出获取大小（{"count":N,"bytes":M} 或 {"bytes":M,"count":N} 两种顺序均支持）
             if (StrUtil.isNotBlank(output) && output.contains("\"bytes\":")) {
-                String sizeStr = output.substring(output.indexOf("\"bytes\":") + 8);
-                sizeStr = sizeStr.substring(0, sizeStr.indexOf(","));
-                return Long.parseLong(sizeStr.trim());
+                String sizeStr = output.substring(output.indexOf("\"bytes\":") + 8).trim();
+                // 取到最近的 , } 空格 或字符串末尾
+                int end = sizeStr.length();
+                for (int i = 0; i < sizeStr.length(); i++) {
+                    char c = sizeStr.charAt(i);
+                    if (c == ',' || c == '}' || c == ' ' || c == '\n' || c == '\r') {
+                        end = i;
+                        break;
+                    }
+                }
+                return Long.parseLong(sizeStr.substring(0, end).trim());
             }
         } catch (Exception e) {
             log.error("获取远程文件大小失败", e);
@@ -571,6 +615,7 @@ public class RcloneUtil {
         command.add("lsjson");
         String remotePath = StrUtil.isBlank(path) ? remoteName + ":" : remoteName + ":" + path;
         command.add(remotePath);
+        command.add("--fast-list");
         command.add("--config");
         command.add(rcloneConfigPath);
 
@@ -597,7 +642,12 @@ public class RcloneUtil {
             errThread.join(3000);
 
             if (exitCode != 0 || StrUtil.isBlank(output)) {
-                log.error("lsjson执行失败: remoteName={}, path={}, exitCode={}, stderr={}", remoteName, path, exitCode, errOutput.toString().trim());
+                // exitCode=3 表示目录不存在，属于可预期的情况（如路径含特殊字符），降为 WARN
+                if (exitCode == 3) {
+                    log.warn("lsjson目录不存在(跳过): remoteName={}, path={}", remoteName, path);
+                } else {
+                    log.error("lsjson执行失败: remoteName={}, path={}, exitCode={}, stderr={}", remoteName, path, exitCode, errOutput.toString().trim());
+                }
                 return "[]";
             }
             return output;
@@ -648,8 +698,12 @@ public class RcloneUtil {
             errThread.join(3000);
 
             if (exitCode != 0) {
-                log.error("lsjson recursive 失败: remoteName={}, path={}, exitCode={}, stderr={}",
-                        remoteName, path, exitCode, errOutput.toString().trim());
+                if (exitCode == 3) {
+                    log.warn("lsjson recursive 目录不存在(跳过): remoteName={}, path={}", remoteName, path);
+                } else {
+                    log.error("lsjson recursive 失败: remoteName={}, path={}, exitCode={}, stderr={}",
+                            remoteName, path, exitCode, errOutput.toString().trim());
+                }
                 return "[]";
             }
             return StrUtil.isBlank(output) ? "[]" : output;
@@ -731,6 +785,11 @@ public class RcloneUtil {
             command.add(remoteName + ":" + newPath);
             command.add("--delete-empty-src-dirs");
         } else {
+            // 先确保目标父目录存在，再用 server-side moveto（同盘重命名，无需下载/上传）
+            String targetParent = newPath.contains("/") ? newPath.substring(0, newPath.lastIndexOf('/')) : "";
+            if (!targetParent.isEmpty()) {
+                makeDirectory(remoteName, targetParent);
+            }
             command.add("moveto");
             command.add(remoteName + ":" + oldPath);
             command.add(remoteName + ":" + newPath);
@@ -738,16 +797,13 @@ public class RcloneUtil {
         command.add("--config");
         command.add(rcloneConfigPath);
 
-        try {
-            ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-            int exitCode = process.waitFor();
-            return exitCode == 0;
-        } catch (Exception e) {
-            log.error("移动/重命名失败: remoteName={}, oldPath={}, newPath={}", remoteName, oldPath, newPath, e);
-            return false;
+        // 使用 executeCommand 统一处理：读取输出流（防止大文件时缓冲区满死锁）并打印日志
+        RcloneResult result = executeCommand(command, line -> log.debug("rclone moveto: {}", line));
+        if (!result.isSuccess()) {
+            log.error("移动/重命名失败: remoteName={}, oldPath={}, newPath={}, err={}",
+                    remoteName, oldPath, newPath, result.getErrorMessage());
         }
+        return result.isSuccess();
     }
 
     /**

@@ -29,6 +29,10 @@
             <el-icon class="menu-icon"><FolderChecked /></el-icon>
             <span>归档管理</span>
           </el-menu-item>
+          <el-menu-item index="/format-rename" class="menu-item">
+            <el-icon class="menu-icon"><EditPen /></el-icon>
+            <span>格式化命名</span>
+          </el-menu-item>
           <el-menu-item index="/strm-manager" class="menu-item">
             <el-icon class="menu-icon"><Monitor /></el-icon>
             <span>STRM监控</span>
@@ -126,6 +130,7 @@ const currentPageTitle = computed(() => {
     '/resource115': '115资源管理',
     '/gd-file-manager': 'GD文件管理',
     '/archive': '归档管理',
+    '/format-rename': '格式化命名',
     '/strm-manager': 'STRM监控'
   }
   return titles[route.path] || '首页'

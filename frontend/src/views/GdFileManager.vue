@@ -50,6 +50,14 @@
       </div>
     </el-card>
 
+    <!-- 后台格式化任务通知 -->
+    <div v-if="bgTask" class="bg-task-bar">
+      <el-icon><Loading class="rotating" /></el-icon>
+      <span>批量格式化进行中：{{ bgTask.dirPath }}</span>
+      <el-button size="small" type="primary" link @click="reopenBgTaskDialog">查看进度</el-button>
+      <el-button size="small" type="info" link @click="bgTask = null">忽略</el-button>
+    </div>
+
     <!-- 主体 -->
     <el-card class="content-card">
       <div class="content-layout">
@@ -87,7 +95,7 @@
               </template>
             </el-table-column>
 
-            <el-table-column label="操作" width="260" fixed="right">
+            <el-table-column label="操作" width="360" fixed="right">
               <template #default="{ row }">
                 <el-button
                   v-if="!row.isDir"
@@ -97,12 +105,26 @@
                   @click.stop="openArchiveDialog(row)"
                 >归档</el-button>
                 <el-button
+                  v-if="!row.isDir"
+                  type="success"
+                  link
+                  size="small"
+                  @click.stop="openFormatRenameDialog(row)"
+                >格式化命名</el-button>
+                <el-button
                   v-if="row.isDir"
                   type="success"
                   link
                   size="small"
                   @click.stop="openBatchArchiveDialog(row)"
                 >批量归档</el-button>
+                <el-button
+                  v-if="row.isDir"
+                  type="warning"
+                  link
+                  size="small"
+                  @click.stop="openBatchFormatDialog(row)"
+                >批量格式化</el-button>
                 <el-button
                   v-if="row.isDir"
                   type="info"
@@ -192,17 +214,36 @@
       :gd-remote="strmGdRemote"
       :gd-source-path="strmGdSourcePath"
     />
+
+    <!-- 格式化命名弹窗（单文件） -->
+    <FormatRenameDialog
+      v-model="formatRenameVisible"
+      :file="formatRenameFile"
+      @renamed="refreshList"
+    />
+
+    <!-- 批量格式化命名弹窗（目录） -->
+    <BatchFormatRenameDialog
+      v-model="batchFormatVisible"
+      :account-id="selectedAccountId"
+      :dir-path="batchFormatDirPath"
+      :initial-task-id="batchFormatInitTaskId"
+      @done="onBatchFormatDone"
+      @background="onBatchFormatBackground"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, shallowRef } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getAccountList } from '@/api/account'
 import { listFiles, deleteFile, deleteDir, moveItem, mkdir } from '@/api/gdFileManager'
 import { startBatchArchive } from '@/api/archive'
 import ArchiveDialog from '@/components/ArchiveDialog.vue'
 import StrmDialog from '@/components/StrmDialog.vue'
+import FormatRenameDialog from '@/components/FormatRenameDialog.vue'
+import BatchFormatRenameDialog from '@/components/BatchFormatRenameDialog.vue'
 
 // ---- 账号 ----
 const accounts = ref([])
@@ -433,6 +474,55 @@ function openArchiveDialog(row) {
   archiveDialogVisible.value = true
 }
 
+// ---- 格式化命名（单文件） ----
+const formatRenameVisible = ref(false)
+const formatRenameFile = ref(null)
+
+function openFormatRenameDialog(row) {
+  const fullPath = currentPath.value
+    ? `${currentPath.value}/${row.name}`
+    : row.name
+  const account = accounts.value.find(a => a.id === selectedAccountId.value)
+  formatRenameFile.value = {
+    fileName: row.name,
+    filePath: fullPath,
+    fileSize: row.size,
+    accountId: selectedAccountId.value,
+    rcloneConfigName: account?.rcloneConfigName || '',
+  }
+  formatRenameVisible.value = true
+}
+
+// ---- 批量格式化命名（目录） ----
+const batchFormatVisible     = ref(false)
+const batchFormatDirPath     = ref('')
+const batchFormatInitTaskId  = ref(null)
+const bgTask                 = shallowRef(null)  // { taskId, dirPath, accountId }
+
+function openBatchFormatDialog(row) {
+  batchFormatDirPath.value    = currentPath.value
+    ? `${currentPath.value}/${row.name}`
+    : row.name
+  batchFormatInitTaskId.value = null
+  batchFormatVisible.value    = true
+}
+
+function reopenBgTaskDialog() {
+  batchFormatDirPath.value    = bgTask.value.dirPath
+  batchFormatInitTaskId.value = bgTask.value.taskId
+  batchFormatVisible.value    = true
+}
+
+function onBatchFormatBackground(info) {
+  bgTask.value             = info
+  batchFormatVisible.value = false
+}
+
+function onBatchFormatDone() {
+  bgTask.value = null
+  refreshList()
+}
+
 // ---- 批量归档（目录） ----
 async function openBatchArchiveDialog(row) {
   const sourcePath = currentPath.value
@@ -497,6 +587,32 @@ onMounted(loadAccounts)
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.bg-task-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: #ecf5ff;
+  border: 1px solid #b3d8ff;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #409eff;
+}
+.bg-task-bar span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rotating {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
 .toolbar-card :deep(.el-card__body) {

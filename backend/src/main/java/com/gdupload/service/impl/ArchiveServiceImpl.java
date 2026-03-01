@@ -66,11 +66,21 @@ public class ArchiveServiceImpl implements IArchiveService {
     private static final String TMDB_SEARCH_URL =
             "https://api.themoviedb.org/3/search/%s?api_key=%s&query=%s&language=%s&page=1";
 
+    private static final String TMDB_TV_URL =
+            "https://api.themoviedb.org/3/tv/%d?api_key=%s&language=%s";
+
+    private static final String TMDB_SEASON_URL =
+            "https://api.themoviedb.org/3/tv/%d/season/%d?api_key=%s&language=%s";
+
     // ─── 正则模式 ─────────────────────────────────────────────────────────────
 
     /** S01E01 / S01E001 */
     private static final Pattern SE_PATTERN =
             Pattern.compile("S(\\d{1,2})E(\\d{1,4})", Pattern.CASE_INSENSITIVE);
+
+    /** 文件名中内嵌的 TMDB ID 标签，如 [tmdbid=90792] */
+    private static final Pattern FILENAME_TMDB_PATTERN =
+            Pattern.compile("(?i)\\[tmdbid=(\\d+)\\]");
 
     /** 中文 第01集/第1话 */
     private static final Pattern CN_EP_PATTERN =
@@ -130,6 +140,13 @@ public class ArchiveServiceImpl implements IArchiveService {
         result.setAnalyzeSource("regex");
 
         String work = filename;
+
+        // 0. 提取并移除 [tmdbid=xxx]（文件名中直接内嵌的 TMDB ID）
+        Matcher tmdbFileM = FILENAME_TMDB_PATTERN.matcher(work);
+        if (tmdbFileM.find()) {
+            result.setTmdbId(Integer.parseInt(tmdbFileM.group(1)));
+            work = FILENAME_TMDB_PATTERN.matcher(work).replaceAll("").trim();
+        }
 
         // 1. 提取扩展名
         Matcher extM = EXT_PATTERN.matcher(work);
@@ -313,8 +330,12 @@ public class ArchiveServiceImpl implements IArchiveService {
 
     private String cleanTitle(String raw) {
         if (raw == null || raw.isEmpty()) return "";
-        // 去掉开头字幕组方括号
+        // 去掉开头字幕组方括号（如 [字幕组]Title）
         raw = raw.replaceAll("^\\s*\\[[^\\]]*\\]\\s*", "");
+        // 去掉 [key=value] 属性标签（如 [tmdbid=90792]，作为兜底清理）
+        raw = raw.replaceAll("(?i)\\[[^\\]]*=[^\\]]*\\]\\s*", "");
+        // 去掉 {key-value} 花括号标签（如 {tmdbid-271629}）
+        raw = raw.replaceAll("\\{[^}]*\\}\\s*", "");
         // 去掉年份括号
         raw = raw.replaceAll("\\s*[（(]\\d{4}[)）]\\s*", " ");
         // 将点/下划线替换为空格（英文文件名风格）
@@ -355,6 +376,13 @@ public class ArchiveServiceImpl implements IArchiveService {
 
     @Override
     public ArchiveAnalyzeResult aiAnalyzeFilename(String filename) {
+        // 检查归档AI解析开关
+        if (!isArchiveAiEnabled()) {
+            log.info("归档AI解析未开启，使用正则解析: {}", filename);
+            ArchiveAnalyzeResult fallback = analyzeFilename(filename);
+            fallback.setAnalyzeSource("regex");
+            return fallback;
+        }
         String key = getEffectiveAiApiKey();
         if (key == null || key.isEmpty()) {
             log.warn("AI API Key 未配置，跳过AI解析");
@@ -382,6 +410,180 @@ public class ArchiveServiceImpl implements IArchiveService {
             fallback.setAnalyzeSource("regex");
             return fallback;
         }
+    }
+
+    // ─── 批量 AI 分析 ─────────────────────────────────────────────────────────
+
+    @Override
+    public List<ArchiveAnalyzeResult> batchAiAnalyzeFilenames(List<String> filenames) {
+        if (filenames == null || filenames.isEmpty()) return Collections.emptyList();
+
+        // 检查归档AI解析开关
+        if (!isArchiveAiEnabled()) {
+            log.info("归档AI解析未开启，批量使用正则解析");
+            return filenames.stream().map(f -> {
+                ArchiveAnalyzeResult r = analyzeFilename(f);
+                r.setAnalyzeSource("regex");
+                return r;
+            }).collect(java.util.stream.Collectors.toList());
+        }
+
+        String key = getEffectiveAiApiKey();
+        if (key == null || key.isEmpty()) {
+            // 无 API Key，逐个 fallback 到正则
+            return filenames.stream().map(f -> {
+                ArchiveAnalyzeResult r = analyzeFilename(f);
+                r.setAnalyzeSource("regex");
+                return r;
+            }).collect(java.util.stream.Collectors.toList());
+        }
+
+        String provider = getEffectiveAiProvider();
+        String model    = getEffectiveAiModel();
+        String apiUrl   = getEffectiveAiApiUrl(provider);
+        String prompt   = buildBatchAiPrompt(filenames);
+
+        try {
+            String aiJson = "openai".equals(provider)
+                    ? callOpenAiApiBatch(key, model, apiUrl, prompt)
+                    : callClaudeApiBatch(key, model, prompt);
+            return parseBatchAiJson(filenames, aiJson);
+        } catch (Exception e) {
+            log.error("批量AI解析失败，降级为逐个正则解析: {}", e.getMessage());
+            return filenames.stream().map(f -> {
+                ArchiveAnalyzeResult r = analyzeFilename(f);
+                r.setAnalyzeSource("regex");
+                return r;
+            }).collect(java.util.stream.Collectors.toList());
+        }
+    }
+
+    private String buildBatchAiPrompt(List<String> filenames) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("请批量分析以下媒体文件名，提取每个文件的信息。\n文件列表：\n");
+        for (int i = 0; i < filenames.size(); i++) {
+            sb.append(i + 1).append(". ").append(filenames.get(i)).append("\n");
+        }
+        sb.append("\n请以JSON数组格式返回，每个元素按顺序对应一个文件：\n");
+        sb.append("[\n  {\n");
+        sb.append("    \"title\": \"作品中文名称\",\n");
+        sb.append("    \"season\": \"季数（如01），电影则null\",\n");
+        sb.append("    \"episode\": \"集数（如01），电影则null\",\n");
+        sb.append("    \"resolution\": \"分辨率（如1080p），无则null\",\n");
+        sb.append("    \"videoCodec\": \"视频编码（HEVC/AVC等），无则null\",\n");
+        sb.append("    \"audioCodec\": \"音频编码（AAC/DTS等），无则null\",\n");
+        sb.append("    \"subtitleGroup\": \"字幕组，无则null\",\n");
+        sb.append("    \"mediaType\": \"tv 或 movie\",\n");
+        sb.append("    \"year\": \"年份四位数字，无则null\",\n");
+        sb.append("    \"isAdult\": false\n");
+        sb.append("  }\n]\n");
+        sb.append("只返回JSON数组，不要包含任何说明文字。");
+        return sb.toString();
+    }
+
+    private String callClaudeApiBatch(String apiKey, String model, String prompt) {
+        JSONObject body = new JSONObject();
+        body.set("model", model);
+        body.set("max_tokens", 4096);
+        JSONArray messages = new JSONArray();
+        JSONObject userMsg = new JSONObject();
+        userMsg.set("role", "user");
+        userMsg.set("content", prompt);
+        messages.add(userMsg);
+        body.set("messages", messages);
+
+        String response = HttpRequest.post("https://api.anthropic.com/v1/messages")
+                .header("x-api-key", apiKey)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .body(body.toString())
+                .timeout(60000)
+                .execute()
+                .body();
+
+        JSONObject resp = JSONUtil.parseObj(response);
+        JSONArray content = resp.getJSONArray("content");
+        if (content != null && !content.isEmpty()) {
+            return content.getJSONObject(0).getStr("text");
+        }
+        throw new RuntimeException("Claude批量API返回内容为空");
+    }
+
+    private String callOpenAiApiBatch(String apiKey, String model, String baseUrl, String prompt) {
+        JSONObject body = new JSONObject();
+        body.set("model", model);
+        body.set("max_tokens", 4096);
+        JSONArray messages = new JSONArray();
+        JSONObject userMsg = new JSONObject();
+        userMsg.set("role", "user");
+        userMsg.set("content", prompt);
+        messages.add(userMsg);
+        body.set("messages", messages);
+
+        String endpoint = (baseUrl != null ? baseUrl : "https://api.openai.com") + "/v1/chat/completions";
+        String response = HttpRequest.post(endpoint)
+                .header("Authorization", "Bearer " + apiKey)
+                .header("content-type", "application/json")
+                .body(body.toString())
+                .timeout(60000)
+                .execute()
+                .body();
+
+        JSONObject resp = JSONUtil.parseObj(response);
+        if (resp.containsKey("error")) {
+            throw new RuntimeException("OpenAI批量API错误: " + resp.getJSONObject("error").getStr("message"));
+        }
+        JSONArray choices = resp.getJSONArray("choices");
+        if (choices != null && !choices.isEmpty()) {
+            return choices.getJSONObject(0).getJSONObject("message").getStr("content");
+        }
+        throw new RuntimeException("OpenAI批量API返回内容为空");
+    }
+
+    private List<ArchiveAnalyzeResult> parseBatchAiJson(List<String> filenames, String aiJson) {
+        List<ArchiveAnalyzeResult> results = new ArrayList<>();
+        try {
+            String json = aiJson.trim();
+            int start = json.indexOf('[');
+            int end   = json.lastIndexOf(']');
+            if (start >= 0 && end > start) json = json.substring(start, end + 1);
+
+            JSONArray array = JSONUtil.parseArray(json);
+            for (int i = 0; i < filenames.size(); i++) {
+                String filename = filenames.get(i);
+                ArchiveAnalyzeResult result = new ArchiveAnalyzeResult();
+                result.setOriginalFilename(filename);
+                result.setAnalyzeSource("ai");
+                // 从原始文件名提取扩展名
+                Matcher extM = EXT_PATTERN.matcher(filename);
+                if (extM.find()) result.setExtension(extM.group(1).toLowerCase());
+
+                if (i < array.size()) {
+                    JSONObject obj = array.getJSONObject(i);
+                    result.setTitle(obj.getStr("title"));
+                    result.setSeason(obj.getStr("season"));
+                    result.setEpisode(obj.getStr("episode"));
+                    result.setResolution(obj.getStr("resolution"));
+                    result.setVideoCodec(obj.getStr("videoCodec"));
+                    result.setAudioCodec(obj.getStr("audioCodec"));
+                    result.setSubtitleGroup(obj.getStr("subtitleGroup"));
+                    result.setMediaType(obj.getStr("mediaType"));
+                    result.setYear(obj.getStr("year"));
+                    Boolean isAdult = obj.getBool("isAdult");
+                    if (Boolean.TRUE.equals(isAdult)) result.setIsAdult(true);
+                }
+                results.add(result);
+            }
+        } catch (Exception e) {
+            log.warn("批量AI响应解析失败，返回空结果: {}", e.getMessage());
+            // 返回空结果列表（同等数量）
+            for (int i = results.size(); i < filenames.size(); i++) {
+                ArchiveAnalyzeResult r = new ArchiveAnalyzeResult();
+                r.setOriginalFilename(filenames.get(i));
+                results.add(r);
+            }
+        }
+        return results;
     }
 
     private String buildAiPrompt(String filename) {
@@ -826,21 +1028,55 @@ public class ArchiveServiceImpl implements IArchiveService {
     private MediaInfoDto getMediaInfoViaRclone(String configName, String cloudPath) {
         try {
             // bash 管道无法避免，对路径中的单引号做转义：' → '\''
-            String escapedConfig  = rcloneConfigPath.replace("'", "'\\''");
-            String escapedPath    = cloudPath.replace("'", "'\\''");
-            String cmd = String.format(
-                "%s cat --config '%s' '%s:%s' 2>/dev/null | head -c 15728640 | " +
+            String escapedConfig = rcloneConfigPath.replace("'", "'\\''");
+            String escapedPath   = cloudPath.replace("'", "'\\''");
+
+            // ── 第一次尝试：读头部 50MB ──────────────────────────────────────────
+            // 适合 MKV 和带 faststart 的 MP4（moov atom 在文件头部）
+            String cmd1 = String.format(
+                "%s cat --config '%s' '%s:%s' 2>/dev/null | head -c 52428800 | " +
                 "ffprobe -v quiet -print_format json -show_streams " +
-                "-probesize 15728640 -analyzeduration 0 -i pipe:0 2>/dev/null",
-                rclonePath, escapedConfig, configName, escapedPath
-            );
-            ProcessBuilder pb = new ProcessBuilder("/bin/bash", "-c", cmd);
-            pb.redirectErrorStream(false);
-            Process process = pb.start();
-            String json = readOutput(process);
-            process.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
-            if (process.isAlive()) process.destroyForcibly();
-            return json.isEmpty() ? null : parseMediaInfo(json);
+                "-probesize 52428800 -analyzeduration 100000 -i pipe:0 2>/dev/null",
+                rclonePath, escapedConfig, configName, escapedPath);
+            ProcessBuilder pb1 = new ProcessBuilder("/bin/bash", "-c", cmd1);
+            pb1.redirectErrorStream(false);
+            Process p1 = pb1.start();
+            String json1 = readOutput(p1);
+            p1.waitFor(90, java.util.concurrent.TimeUnit.SECONDS);
+            if (p1.isAlive()) p1.destroyForcibly();
+
+            MediaInfoDto result = json1.isEmpty() ? null : parseMediaInfo(json1);
+            if (result != null && result.getVideoCodec() != null) {
+                log.info("ffprobe 头部探测成功: configName={}, codec={}", configName, result.getVideoCodec());
+                return result;
+            }
+
+            // ── 第二次尝试：读尾部 10MB ──────────────────────────────────────────
+            // 无 faststart 的 MP4 把 moov atom 放在文件末尾，需要从尾部读取
+            // rclone cat --offset 支持负数，-N 表示从文件末尾倒数 N 字节
+            log.info("头部探测未获取编码，尝试尾部 10MB: configName={}, path={}", configName, cloudPath);
+            String cmd2 = String.format(
+                "%s cat --config '%s' '%s:%s' --offset -10485760 2>/dev/null | " +
+                "ffprobe -v quiet -print_format json -show_streams " +
+                "-probesize 10485760 -analyzeduration 100000 -i pipe:0 2>/dev/null",
+                rclonePath, escapedConfig, configName, escapedPath);
+            ProcessBuilder pb2 = new ProcessBuilder("/bin/bash", "-c", cmd2);
+            pb2.redirectErrorStream(false);
+            Process p2 = pb2.start();
+            String json2 = readOutput(p2);
+            p2.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
+            if (p2.isAlive()) p2.destroyForcibly();
+
+            if (!json2.isEmpty()) {
+                MediaInfoDto result2 = parseMediaInfo(json2);
+                if (result2 != null && result2.getVideoCodec() != null) {
+                    log.info("ffprobe 尾部探测成功: configName={}, codec={}", configName, result2.getVideoCodec());
+                    return result2;
+                }
+            }
+
+            log.warn("ffprobe 头尾均未探测到编码: configName={}, path={}", configName, cloudPath);
+            return result; // 返回头部结果（可能含分辨率但无编码，或 null）
         } catch (Exception e) {
             log.warn("ffprobe via rclone 失败: configName={}, path={}, err={}", configName, cloudPath, e.getMessage());
             return null;
@@ -1006,6 +1242,91 @@ public class ArchiveServiceImpl implements IArchiveService {
             }
         } catch (Exception ignored) {}
         return "zh-CN";
+    }
+
+    // ─── TMDB 剧集信息查询 ────────────────────────────────────────────────────
+
+    @Override
+    public Map<String, String> fetchTvEpisodeInfo(int tmdbId, int season, int episode) {
+        String apiKey = getEffectiveTmdbApiKey();
+        String language = getTmdbLanguage();
+        if (apiKey == null || apiKey.isEmpty()) return null;
+        try {
+            // 1. 获取剧名与总季数
+            String tvBody = HttpRequest.get(
+                    String.format(TMDB_TV_URL, tmdbId, apiKey, language))
+                    .timeout(15000).execute().body();
+            JSONObject tvObj = JSONUtil.parseObj(tvBody);
+            if (tvObj.getInt("status_code") != null) {
+                log.warn("[TMDB] TV show 不存在: tmdbId={}", tmdbId);
+                return null;
+            }
+            String showTitle = tvObj.getStr("name");
+            int numberOfSeasons = tvObj.getInt("number_of_seasons", 1);
+
+            // 2. 先在指定季中查找
+            Map<String, String> result = findEpisodeInSeason(tmdbId, season, episode, apiKey, language);
+            if (result != null) {
+                result.put("showTitle", showTitle);
+                return result;
+            }
+
+            // 3. 未找到时遍历其他季
+            for (int s = 1; s <= numberOfSeasons; s++) {
+                if (s == season) continue;
+                result = findEpisodeInSeason(tmdbId, s, episode, apiKey, language);
+                if (result != null) {
+                    result.put("showTitle", showTitle);
+                    return result;
+                }
+            }
+
+            // 4. 找不到具体集，至少返回剧名
+            Map<String, String> fallback = new HashMap<>();
+            fallback.put("showTitle", showTitle);
+            fallback.put("season", String.format("%02d", season));
+            return fallback;
+
+        } catch (Exception e) {
+            log.warn("[TMDB] fetchTvEpisodeInfo 失败: tmdbId={} s={} e={} err={}",
+                    tmdbId, season, episode, e.getMessage());
+            return null;
+        }
+    }
+
+    /** 在指定季中查找集，返回含 season / episodeTitle 的 Map，找不到返回 null */
+    private Map<String, String> findEpisodeInSeason(int tmdbId, int season, int episode,
+                                                     String apiKey, String language) {
+        try {
+            String body = HttpRequest.get(
+                    String.format(TMDB_SEASON_URL, tmdbId, season, apiKey, language))
+                    .timeout(15000).execute().body();
+            JSONObject obj = JSONUtil.parseObj(body);
+            if (obj.getInt("status_code") != null) return null;
+            JSONArray episodes = obj.getJSONArray("episodes");
+            if (episodes == null) return null;
+            for (int i = 0; i < episodes.size(); i++) {
+                JSONObject ep = episodes.getJSONObject(i);
+                if (ep.getInt("episode_number") == episode) {
+                    Map<String, String> r = new HashMap<>();
+                    r.put("season", String.format("%02d", season));
+                    r.put("episodeTitle", ep.getStr("name"));
+                    return r;
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /** 从智能搜索配置读取「归档AI解析」开关，默认关闭 */
+    private boolean isArchiveAiEnabled() {
+        try {
+            Map<String, Object> cfg = smartSearchConfigService.getFullConfig("default");
+            if (cfg != null && Boolean.TRUE.equals(cfg.get("archiveAiEnabled"))) {
+                return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 
     private boolean notBlank(String s) {

@@ -16,10 +16,13 @@ import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import javax.annotation.PostConstruct;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -65,13 +68,23 @@ public class UploadServiceImpl implements IUploadService {
     // 存储任务的中断标志（用于暂停/取消任务）
     private final Map<Long, AtomicBoolean> taskStopFlags = new ConcurrentHashMap<>();
 
-    // 并发上传线程池（可配置并发数，默认5个并发）
-    private final ExecutorService uploadExecutor = Executors.newFixedThreadPool(5, r -> {
-        Thread thread = new Thread(r);
-        thread.setName("upload-worker-" + thread.getId());
-        thread.setDaemon(true);
-        return thread;
-    });
+    @Value("${app.upload.concurrent-files:10}")
+    private int concurrentFiles;
+
+    // 并发上传线程池（由 @PostConstruct 初始化，大小从 app.upload.concurrent-files 读取）
+    private ExecutorService uploadExecutor;
+
+    @PostConstruct
+    private void initExecutor() {
+        int poolSize = Math.max(1, concurrentFiles);
+        uploadExecutor = Executors.newFixedThreadPool(poolSize, r -> {
+            Thread thread = new Thread(r);
+            thread.setName("upload-worker-" + thread.getId());
+            thread.setDaemon(true);
+            return thread;
+        });
+        log.info("上传线程池初始化完成，并发数: {}", poolSize);
+    }
 
     @Override
     @Async("taskExecutor")

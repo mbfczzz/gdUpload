@@ -83,6 +83,11 @@ public class StrmCoreHelper {
     private static final Pattern TMDB_ID_PATTERN =
             Pattern.compile("\\[tmdbid=(\\d+)\\]", Pattern.CASE_INSENSITIVE);
 
+    /** 用于父目录名解析：括号年份、连字符年份、Season 目录 */
+    private static final Pattern DIR_YEAR_PAREN = Pattern.compile("\\((\\d{4})\\)");
+    private static final Pattern DIR_YEAR_DASH  = Pattern.compile("-(\\d{4})(?:-|$)");
+    private static final Pattern DIR_SEASON     = Pattern.compile("(?i)^(season|s)\\s*\\d+$");
+
     // ─── 公开结果类 ───────────────────────────────────────────────────────────
 
     public static class StrmFileResult {
@@ -250,6 +255,21 @@ public class StrmCoreHelper {
                     k -> fetchShowCache(parsed, tmdbApiKey, language));
         }
 
+        // 2.5. TMDB 仍无结果 → 用父目录名兜底搜索
+        //      例：白日梦我 (2023)/Season 1/ep01.mkv → 搜"白日梦我"
+        if (cache.title == null && tmdbApiKey != null && !tmdbApiKey.isEmpty()) {
+            ArchiveAnalyzeResult parentParsed = parseParentDirFromPath(relFilePath);
+            if (parentParsed != null) {
+                log.info("[STRM] 尝试父目录标题搜索 TMDB: title={} year={}",
+                        parentParsed.getTitle(), parentParsed.getYear());
+                String parentKey = normalizeKey(parentParsed.getTitle())
+                        + "|" + safe(parentParsed.getYear())
+                        + "|";
+                cache = showCache.computeIfAbsent(parentKey,
+                        k -> fetchShowCache(parentParsed, tmdbApiKey, language));
+            }
+        }
+
         // 3. 输出目录
         // 类型优先取 cache.type（TMDB 直查时已确定），其次取文件名解析结果
         String resolvedType = cache.type != null ? cache.type : safe(parsed.getMediaType());
@@ -378,6 +398,57 @@ public class StrmCoreHelper {
             if (m.find()) return Integer.parseInt(m.group(1));
         }
         return null;
+    }
+
+    /**
+     * 从文件相对路径中提取父目录（或祖父目录）的标题和年份，用于 TMDB 兜底搜索。
+     * 处理格式：
+     *   白日梦我 (2023)/ep.mkv          → title=白日梦我, year=2023
+     *   白日梦我-2023-[tmdbid=x]/ep.mkv → title=白日梦我, year=2023
+     *   白日梦我/Season 1/ep.mkv        → title=白日梦我（Season 目录向上取祖父）
+     */
+    private ArchiveAnalyzeResult parseParentDirFromPath(String relFilePath) {
+        String normalized = relFilePath.replace('\\', '/');
+        int fileSlash = normalized.lastIndexOf('/');
+        if (fileSlash <= 0) return null;
+        String parentPath = normalized.substring(0, fileSlash);
+
+        String dirName = parentPath.contains("/")
+                ? parentPath.substring(parentPath.lastIndexOf('/') + 1)
+                : parentPath;
+
+        // 若父目录是 Season 目录，向上取祖父目录
+        if (DIR_SEASON.matcher(dirName).matches()) {
+            int grandSlash = parentPath.lastIndexOf('/');
+            if (grandSlash <= 0) return null;
+            dirName = parentPath.substring(grandSlash + 1);
+        }
+        if (dirName.isEmpty()) return null;
+
+        // 去掉 [tmdbid=xxx]
+        String cleaned = TMDB_ID_PATTERN.matcher(dirName).replaceAll("").trim();
+
+        // 提取年份：先尝试 (2023)，再尝试 -2023-
+        String year = null;
+        Matcher m = DIR_YEAR_PAREN.matcher(cleaned);
+        if (m.find()) {
+            year = m.group(1);
+            cleaned = (cleaned.substring(0, m.start()) + cleaned.substring(m.end())).trim();
+        } else {
+            m = DIR_YEAR_DASH.matcher(cleaned);
+            if (m.find()) {
+                year = m.group(1);
+                cleaned = (cleaned.substring(0, m.start()) + cleaned.substring(m.end())).trim();
+            }
+        }
+
+        cleaned = cleaned.replaceAll("^[-\\s]+|[-\\s]+$", "").trim();
+        if (cleaned.isEmpty()) return null;
+
+        ArchiveAnalyzeResult result = new ArchiveAnalyzeResult();
+        result.setTitle(cleaned);
+        result.setYear(year);
+        return result;
     }
 
     /**

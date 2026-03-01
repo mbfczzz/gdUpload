@@ -162,6 +162,11 @@
           <div class="form-tip">使用AI模型进行智能资源筛选</div>
         </el-form-item>
 
+        <el-form-item label="归档AI解析">
+          <el-switch v-model="config.archiveAiEnabled" />
+          <div class="form-tip">归档时允许调用AI解析文件名（手动AI解析按钮 & TMDB无结果时自动尝试AI识别）</div>
+        </el-form-item>
+
         <template v-if="config.aiEnabled">
           <el-form-item label="AI提供商">
             <el-select v-model="config.aiProvider" placeholder="请选择AI提供商" @change="handleProviderChange">
@@ -655,6 +660,7 @@ const defaultConfig = {
 
   // AI配置
   aiEnabled: false,
+  archiveAiEnabled: false,
   aiProvider: 'claude',
   aiApiKey: '',
   aiApiUrl: 'http://localhost:11434',

@@ -48,3 +48,28 @@ export function mkdir(accountId, path) {
     data: { accountId, path }
   })
 }
+
+// 启动批量格式化命名任务
+export function startBatchFormat(accountId, dirPath) {
+  return request({
+    url: '/gd-file/batch-format/start',
+    method: 'post',
+    data: { accountId, dirPath }
+  })
+}
+
+// 查询批量格式化命名任务进度
+export function getBatchFormatStatus(taskId) {
+  return request({
+    url: `/gd-file/batch-format/${taskId}/status`,
+    method: 'get'
+  })
+}
+
+// 取消批量格式化命名任务
+export function cancelBatchFormat(taskId) {
+  return request({
+    url: `/gd-file/batch-format/${taskId}`,
+    method: 'delete'
+  })
+}

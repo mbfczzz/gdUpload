@@ -55,7 +55,7 @@
             </el-tag>
             <el-tag v-else-if="parseInfo.analyzeSource === 'ai'" type="warning" size="small">AI识别</el-tag>
             <el-tag v-else type="info" size="small">正则解析</el-tag>
-            <el-button size="small" type="warning" plain :loading="techLoading" @click="runAiAnalyze">
+            <el-button v-if="archiveAiEnabled" size="small" type="warning" plain :loading="techLoading" @click="runAiAnalyze">
               AI解析
             </el-button>
           </div>
@@ -197,7 +197,7 @@
       <div v-else-if="tmdbResults.length === 0 && tmdbSearched && !aiAnalyzing" class="status-row status-warn">
         <el-icon><Warning /></el-icon>
         <span>未找到匹配结果</span>
-        <el-button size="small" link type="warning" @click="tryAiThenTmdb" :loading="aiAnalyzing">
+        <el-button v-if="archiveAiEnabled" size="small" link type="warning" @click="tryAiThenTmdb" :loading="aiAnalyzing">
           尝试AI识别
         </el-button>
       </div>
@@ -347,6 +347,7 @@ import {
   Document, Edit, Search, FolderOpened, FolderChecked,
   Warning, Check, Film, Loading
 } from '@element-plus/icons-vue'
+import { getFullConfig } from '@/api/smartSearchConfig'
 import {
   analyzeFilename,
   aiAnalyzeFilename,
@@ -390,6 +391,8 @@ const parseInfo = reactive({
 })
 
 // ─── TMDB ─────────────────────────────────────────────────────────────────────
+
+const archiveAiEnabled = ref(false)   // 归档AI解析开关，从配置加载
 
 const tmdbLoading   = ref(false)
 const aiAnalyzing   = ref(false)
@@ -493,6 +496,12 @@ watch(visible, async (val) => {
 })
 
 async function initDialog() {
+  // 加载归档AI解析开关
+  try {
+    const { data } = await getFullConfig()
+    archiveAiEnabled.value = !!data?.archiveAiEnabled
+  } catch { archiveAiEnabled.value = false }
+
   // 重置状态
   tmdbResults.value  = []
   selectedTmdb.value = null
@@ -515,6 +524,10 @@ async function initDialog() {
     if (data) {
       applyParseResult(data)
       flowStep.value = 1
+      // 文件名中含 [tmdbid=xxx] 时预填手动输入框，TMDB搜索无结果时可直接使用
+      if (data.tmdbId) {
+        manualTmdb.tmdbId = data.tmdbId.toString()
+      }
     }
   } catch (e) {
     console.warn('文件名解析失败', e)
@@ -523,8 +536,8 @@ async function initDialog() {
   // 1b. ffprobe 探测真实媒体信息（优先于 AI，只对本地文件有效）
   await tryFfprobe()
 
-  // 1c. 技术字段仍全空时，自动静默调 AI 补充（字幕组不走AI，手动填）
-  if (!parseInfo.resolution && !parseInfo.videoCodec && !parseInfo.audioCodec) {
+  // 1c. 技术字段仍全空时，且开启了归档AI解析，自动静默调 AI 补充
+  if (archiveAiEnabled.value && !parseInfo.resolution && !parseInfo.videoCodec && !parseInfo.audioCodec) {
     autoFillTechByAi()
   }
 
@@ -606,6 +619,7 @@ function applyParseResult(result) {
   parseInfo.year             = result.year || ''
   parseInfo.mediaType        = result.mediaType || 'tv'
   parseInfo.analyzeSource    = result.analyzeSource || 'regex'
+  parseInfo.tmdbId           = result.tmdbId || null
   // 成人内容检测
   if (result.isAdult) {
     isAdultDetected.value = true

@@ -90,6 +90,12 @@ const routes = [
     meta: { title: '归档管理' }
   },
   {
+    path: '/format-rename',
+    name: 'FormatRename',
+    component: () => import('@/views/FormatRename.vue'),
+    meta: { title: '格式化命名' }
+  },
+  {
     path: '/strm-manager',
     name: 'StrmManager',
     component: () => import('@/views/StrmManager.vue'),
