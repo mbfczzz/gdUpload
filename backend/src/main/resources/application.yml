@@ -119,6 +119,14 @@ app:
     drive-chunk-size: 512M            # GD分块大小（已是上限，保持）
     timeout: 3600
 
+  # STRM 监控配置
+  strm:
+    process-concurrency: 32     # STRM 监控同步：单次任务内并行处理文件数
+
+  # 批量格式化重命名配置
+  format-rename:
+    process-concurrency: 256     # 批量格式化重命名：并行 ffprobe/rclone 线程数（I/O密集，极限模式）
+
   # 上传配置
   upload:
     concurrent-files: 20        # 同时上传文件数（20文件×32流=640并发连接）
@@ -174,6 +182,11 @@ app:
   # 归档配置
   archive:
     target-path: /video2  # 归档目标根目录
+    batch-threads: 24              # 批量归档并行线程数（I/O密集型，可远超CPU核数）
+    ai-concurrency: 3              # AI 并发调用数（避免触发限流，按提供商酌情调高）
+    ai-call-interval: 1000         # AI 调用最小间隔(ms)，降低被限流风险
+    tmdb-call-interval: 100        # TMDB API 调用间隔(ms)，TMDB 限流宽松可调低
+    db-flush-interval: 5           # 进度刷DB间隔（每处理N个文件刷一次，减少锁争用）
 
 # TMDB配置
 tmdb:

@@ -7,6 +7,7 @@ import com.gdupload.common.BusinessException;
 import com.gdupload.dto.GdFileItem;
 import com.gdupload.dto.PagedResult;
 import com.gdupload.service.IGdFileManagerService;
+import com.gdupload.util.RcloneResult;
 import com.gdupload.util.RcloneUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -128,5 +129,112 @@ public class GdFileManagerServiceImpl implements IGdFileManagerService {
         boolean success = rcloneUtil.makeDirectory(rcloneConfigName, path);
         if (!success) throw new BusinessException("创建目录失败: " + path);
         invalidateCache(rcloneConfigName, path);
+    }
+
+    // ── 空文件夹清理 ─────────────────────────────────────────────────────────────
+
+    /**
+     * 递归检查目录是否为空（子目录下也没有任何文件才算空）
+     */
+    private boolean isDirEmpty(String rcloneConfigName, String dirPath) {
+        String json = rcloneUtil.listJsonRecursive(rcloneConfigName, dirPath);
+        if (StrUtil.isBlank(json) || "[]".equals(json.trim())) {
+            return true;
+        }
+        try {
+            List<GdFileItem> files = objectMapper.readValue(json, new TypeReference<List<GdFileItem>>() {});
+            return files.isEmpty();
+        } catch (Exception e) {
+            log.error("检查目录是否为空失败: {}", dirPath, e);
+            return false; // 解析失败视为非空，避免误删
+        }
+    }
+
+    @Override
+    public boolean deleteEmptyDirectory(String rcloneConfigName, String dirPath) {
+        if (!isDirEmpty(rcloneConfigName, dirPath)) {
+            return false;
+        }
+        boolean success = rcloneUtil.purgeDirectory(rcloneConfigName, dirPath);
+        if (success) {
+            invalidateCache(rcloneConfigName, dirPath);
+        }
+        return success;
+    }
+
+    @Override
+    public Map<String, Object> cleanEmptyDirectories(String rcloneConfigName, String basePath) {
+        // 1. 列出 basePath 下的直接子项
+        String json = rcloneUtil.listJson(rcloneConfigName, basePath);
+        List<GdFileItem> items = Collections.emptyList();
+        if (StrUtil.isNotBlank(json)) {
+            try {
+                items = objectMapper.readValue(json, new TypeReference<List<GdFileItem>>() {});
+            } catch (Exception e) {
+                log.error("解析目录列表失败: {}", basePath, e);
+            }
+        }
+
+        // 2. 筛选出所有子目录
+        List<GdFileItem> dirs = new ArrayList<>();
+        for (GdFileItem item : items) {
+            if (Boolean.TRUE.equals(item.getIsDir())) {
+                dirs.add(item);
+            }
+        }
+
+        List<String> deleted = new ArrayList<>();
+        int skipped = 0;
+
+        // 3. 逐个检查并删除空目录
+        for (GdFileItem dir : dirs) {
+            String dirPath = StrUtil.isBlank(basePath) ? dir.getName() : basePath + "/" + dir.getName();
+            if (isDirEmpty(rcloneConfigName, dirPath)) {
+                boolean success = rcloneUtil.purgeDirectory(rcloneConfigName, dirPath);
+                if (success) {
+                    deleted.add(dir.getName());
+                    log.info("已删除空文件夹: {}", dirPath);
+                }
+            } else {
+                skipped++;
+            }
+        }
+
+        // 4. 失效缓存
+        if (!deleted.isEmpty()) {
+            invalidateCache(rcloneConfigName, basePath);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("deleted", deleted);
+        result.put("deletedCount", deleted.size());
+        result.put("skipped", skipped);
+        result.put("total", dirs.size());
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> deduplicatePath(String rcloneConfigName, String path) {
+        log.info("开始去重: configName={}, path={}", rcloneConfigName, path);
+
+        // 收集 dedupe 输出日志
+        List<String> outputLines = Collections.synchronizedList(new ArrayList<>());
+        RcloneResult result = rcloneUtil.dedupe(rcloneConfigName, path, line -> {
+            outputLines.add(line);
+            log.info("dedupe: {}", line);
+        });
+
+        // 失效缓存（dedupe 会改变目录结构）
+        invalidateCache(rcloneConfigName, path != null ? path : "");
+        // 也失效父目录
+        if (path != null && path.contains("/")) {
+            invalidateCache(rcloneConfigName, path.substring(0, path.lastIndexOf('/')));
+        }
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("success", result.isSuccess());
+        resp.put("message", result.isSuccess() ? "去重完成" : "去重失败: " + result.getErrorMessage());
+        resp.put("log", outputLines);
+        return resp;
     }
 }

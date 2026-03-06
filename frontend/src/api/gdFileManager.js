@@ -73,3 +73,30 @@ export function cancelBatchFormat(taskId) {
     method: 'delete'
   })
 }
+
+// 删除单个空目录（递归检查子目录也为空才删除）
+export function deleteEmptyDir(accountId, dirPath) {
+  return request({
+    url: '/gd-file/empty-dir',
+    method: 'delete',
+    data: { accountId, dirPath }
+  })
+}
+
+// 批量清理当前路径下所有空文件夹
+export function cleanEmptyDirs(accountId, basePath) {
+  return request({
+    url: '/gd-file/clean-empty-dirs',
+    method: 'post',
+    data: { accountId, basePath }
+  })
+}
+
+// 去重合并：合并GD上的同名文件夹，清理重复
+export function dedupePath(accountId, path) {
+  return request({
+    url: '/gd-file/dedupe',
+    method: 'post',
+    data: { accountId, path }
+  })
+}

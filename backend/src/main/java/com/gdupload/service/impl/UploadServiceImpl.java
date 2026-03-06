@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.stream.Collectors;
 import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -56,6 +57,7 @@ public class UploadServiceImpl implements IUploadService {
     private final IWebSocketService webSocketService;
     private final ISystemLogService systemLogService;
     private final UploadRecordMapper uploadRecordMapper;
+    private final IArchiveService archiveService;
 
     // 自注入，用于解决 Spring 事务自调用问题
     @Autowired
@@ -145,6 +147,38 @@ public class UploadServiceImpl implements IUploadService {
             task.setUploadedCount(initialUploadedCount);
             task.setUploadedSize(initialUploadedSize);
             uploadTaskService.updateById(task);
+
+            // ═══ 预创建目标目录，避免并发上传时GD创建重复目录 ═══
+            try {
+                // 收集所有需要创建的目录路径（去重）
+                java.util.Set<String> dirsToCreate = new java.util.HashSet<>();
+                dirsToCreate.add(task.getTargetPath()); // 根目录
+                for (FileInfo file : allFiles) {
+                    if (file.getRelativePath() != null && !file.getRelativePath().trim().isEmpty()) {
+                        String dirPath = task.getTargetPath();
+                        if (!dirPath.endsWith("/")) dirPath += "/";
+                        dirPath += file.getRelativePath();
+                        dirsToCreate.add(dirPath);
+                    }
+                }
+                // 为每个账号创建目录
+                java.util.Set<Long> accountIds = allFiles.stream()
+                    .map(FileInfo::getUploadAccountId)
+                    .filter(id -> id != null)
+                    .collect(Collectors.toSet());
+                for (Long accountId : accountIds) {
+                    GdAccount account = gdAccountService.getById(accountId);
+                    if (account != null) {
+                        for (String dirPath : dirsToCreate) {
+                            rcloneUtil.makeDirectory(account.getRcloneConfigName(), dirPath);
+                        }
+                    }
+                }
+                log.info("目标目录预创建完成: {} 个目录", dirsToCreate.size());
+            } catch (Exception e) {
+                log.warn("预创建目录失败（不影响上传）: {}", e.getMessage());
+            }
+            // ═══════════════════════════════════════════════
 
             // 使用原子计数器确保线程安全
             AtomicInteger uploadedCount = new AtomicInteger(initialUploadedCount);
@@ -472,66 +506,136 @@ public class UploadServiceImpl implements IUploadService {
                 return UploadResult.failure(errorMsg);
             }
 
-            // 构建目标路径（包含相对路径以保留目录结构）
-            String remotePath = task.getTargetPath();
-            if (!remotePath.endsWith("/")) {
-                remotePath += "/";
-            }
-
-            // 如果文件有相对路径（包含源目录名+子目录），追加到目标路径中以保留目录结构
+            // ═══ 上传前自动格式化文件名（补充编码信息）═══
             String finalFileName = sanitizedFileName;
-            if (fileInfo.getRelativePath() != null && !fileInfo.getRelativePath().isEmpty()) {
-                remotePath += fileInfo.getRelativePath() + "/";
-                log.info("文件包含相对路径，保留目录结构: {}", remotePath);
+            Path finalFilePath = filePath;
 
-                // 从相对路径中提取最后一级目录名（剧集文件夹名），拼接到文件名前
-                // 例如：relativePath = "重庆遇见爱 (2024)"，fileName = "第1集.mp4"
-                // 结果：finalFileName = "重庆遇见爱 (2024)-第1集.mp4"
-                String[] pathParts = fileInfo.getRelativePath().split("[/\\\\]");
-                if (pathParts.length > 0) {
-                    String folderName = pathParts[pathParts.length - 1]; // 取最后一级目录名
-                    if (!folderName.isEmpty()) {
-                        // 提取文件名（不含扩展名）和扩展名
-                        int lastDotIndex = sanitizedFileName.lastIndexOf('.');
-                        if (lastDotIndex > 0) {
-                            String nameWithoutExt = sanitizedFileName.substring(0, lastDotIndex);
-                            String extension = sanitizedFileName.substring(lastDotIndex);
-                            // 拼接：文件夹名-原文件名.扩展名
-                            finalFileName = folderName + "-" + nameWithoutExt + extension;
-                            log.info("计划重命名文件: {} -> {}", sanitizedFileName, finalFileName);
+            log.info("========== 开始文件格式化检查 ==========");
+            log.info("原始文件名: {}", sanitizedFileName);
+            log.info("是否为媒体文件: {}", isMediaFile(sanitizedFileName));
+
+            if (isMediaFile(sanitizedFileName)) {
+                try {
+                    log.info(">>> 步骤1: 解析文件名");
+                    // 1. 解析当前文件名
+                    com.gdupload.dto.ArchiveAnalyzeResult analyzed = archiveService.analyzeFilename(sanitizedFileName);
+                    log.info("解析结果 - 标题: {}, 季: {}, 集: {}, 分辨率: {}, 视频编码: {}, 音频编码: {}, 字幕组: {}",
+                        analyzed.getTitle(), analyzed.getSeason(), analyzed.getEpisode(),
+                        analyzed.getResolution(), analyzed.getVideoCodec(), analyzed.getAudioCodec(), analyzed.getSubtitleGroup());
+
+                    // 2. 检查是否缺少编码信息
+                    boolean needsProbe = (analyzed.getVideoCodec() == null || analyzed.getVideoCodec().isEmpty())
+                                      || (analyzed.getResolution() == null || analyzed.getResolution().isEmpty());
+
+                    log.info(">>> 步骤2: 判断是否需要ffprobe探测");
+                    log.info("缺少视频编码: {}, 缺少分辨率: {}, 需要探测: {}",
+                        (analyzed.getVideoCodec() == null || analyzed.getVideoCodec().isEmpty()),
+                        (analyzed.getResolution() == null || analyzed.getResolution().isEmpty()),
+                        needsProbe);
+
+                    if (needsProbe) {
+                        log.info(">>> 步骤3: 开始ffprobe探测");
+                        log.info("探测文件路径: {}", filePath.toString());
+
+                        // 3. 本地 ffprobe 探测（很快，0.1秒）
+                        com.gdupload.dto.MediaInfoDto mediaInfo = archiveService.getMediaInfo(filePath.toString(), null);
+
+                        if (mediaInfo != null) {
+                            log.info("ffprobe探测成功 - 分辨率: {}, 视频编码: {}, 音频编码: {}",
+                                mediaInfo.getResolution(), mediaInfo.getVideoCodec(), mediaInfo.getAudioCodec());
+
+                            // 4. 补充缺失字段
+                            log.info(">>> 步骤4: 补充缺失的编码信息");
+                            boolean updated = false;
+                            if (mediaInfo.getResolution() != null && analyzed.getResolution() == null) {
+                                log.info("补充分辨率: {} -> {}", analyzed.getResolution(), mediaInfo.getResolution());
+                                analyzed.setResolution(mediaInfo.getResolution());
+                                updated = true;
+                            }
+                            if (mediaInfo.getVideoCodec() != null) {
+                                log.info("补充视频编码: {} -> {}", analyzed.getVideoCodec(), mediaInfo.getVideoCodec());
+                                analyzed.setVideoCodec(mediaInfo.getVideoCodec());
+                                updated = true;
+                            }
+                            if (mediaInfo.getAudioCodec() != null && analyzed.getAudioCodec() == null) {
+                                log.info("补充音频编码: {} -> {}", analyzed.getAudioCodec(), mediaInfo.getAudioCodec());
+                                analyzed.setAudioCodec(mediaInfo.getAudioCodec());
+                                updated = true;
+                            }
+
+                            log.info("是否有更新: {}", updated);
+                            if (updated) {
+                                // 5. 生成新文件名
+                                log.info(">>> 步骤5: 生成新文件名");
+                                String newFileName = buildFormattedFilename(analyzed);
+                                log.info("新文件名: {}", newFileName);
+
+                                if (!newFileName.equals(sanitizedFileName)) {
+                                    log.info(">>> 步骤6: 重命名本地文件");
+                                    // 6. 重命名本地文件
+                                    Path newFilePath = filePath.getParent().resolve(newFileName);
+                                    log.info("重命名: {} -> {}", filePath, newFilePath);
+                                    Files.move(filePath, newFilePath, StandardCopyOption.REPLACE_EXISTING);
+
+                                    finalFileName = newFileName;
+                                    finalFilePath = newFilePath;
+
+                                    log.info("✓ 文件格式化成功: {} → {}", sanitizedFileName, newFileName);
+
+                                    // 更新 FileInfo 中的文件名和路径
+                                    fileInfo.setFileName(newFileName);
+                                    fileInfo.setFilePath(newFilePath.toString());
+                                    fileInfoService.updateById(fileInfo);
+                                    log.info("✓ 数据库已更新");
+                                } else {
+                                    log.info("新旧文件名相同，无需重命名");
+                                }
+                            } else {
+                                log.info("没有需要补充的信息");
+                            }
+                        } else {
+                            log.warn("ffprobe探测失败，返回null");
                         }
+                    } else {
+                        log.info("文件已有完整编码信息，跳过格式化");
                     }
+                } catch (Exception e) {
+                    log.error("========== 文件格式化异常 ==========");
+                    log.error("文件名: {}", sanitizedFileName);
+                    log.error("异常类型: {}", e.getClass().getName());
+                    log.error("异常消息: {}", e.getMessage());
+                    log.error("完整堆栈:", e);
+                    log.error("使用原文件名继续上传");
+                    log.error("=====================================");
+                    // 格式化失败不影响上传，继续使用原文件名
                 }
             } else {
-                log.warn("文件relativePath为空: fileId={}, fileName={}, filePath={}",
-                    fileInfo.getId(), fileInfo.getFileName(), fileInfo.getFilePath());
+                log.info("非媒体文件，跳过格式化");
             }
+            log.info("========== 文件格式化检查完成 ==========");
+            log.info("最终文件名: {}", finalFileName);
+            // ═══════════════════════════════════════════════
+
+            // 构建完整的目标文件路径（包含文件名）
+            String targetPath = task.getTargetPath();
+            if (!targetPath.endsWith("/")) {
+                targetPath += "/";
+            }
+
+            // 构建完整的远程文件路径（目录 + 文件名）
+            String remoteFilePath = targetPath + finalFileName;
 
             log.info("准备上传文件: {} -> {}:{}, 文件大小: {}",
-                originalFilePath, account.getRcloneConfigName(), remotePath,
+                finalFilePath, account.getRcloneConfigName(), remoteFilePath,
                 formatSize(fileInfo.getFileSize()));
 
-            // 使用rclone上传文件到目标目录
-            RcloneResult result = rcloneUtil.uploadFile(
-                originalFilePath,                 // sourcePath (原始文件路径)
-                account.getRcloneConfigName(),    // remoteName
-                remotePath,                       // targetPath (目录路径，以/结尾)
+            // 使用 rclone moveto 直接上传文件到指定路径（文件到文件）
+            RcloneResult result = rcloneUtil.uploadSingleFileTo(
+                finalFilePath.toString(),             // 本地文件路径（可能已重命名）
+                account.getRcloneConfigName(),        // remoteName
+                remoteFilePath,                       // 完整远程文件路径（含文件名）
                 line -> log.debug("上传进度: {}", line)  // logConsumer
             );
-
-            // 如果上传成功且需要重命名
-            if (result.isSuccess() && !sanitizedFileName.equals(finalFileName)) {
-                log.info("上传成功，开始重命名文件: {} -> {}", sanitizedFileName, finalFileName);
-                RcloneResult renameResult = rcloneUtil.renameFile(
-                    account.getRcloneConfigName(),
-                    remotePath + sanitizedFileName,  // 原文件路径
-                    remotePath + finalFileName       // 新文件路径
-                );
-                if (!renameResult.isSuccess()) {
-                    log.error("文件重命名失败: {}", renameResult.getErrorMessage());
-                    // 重命名失败不影响上传结果，继续处理
-                }
-            }
 
             // 检查是否配额超限
             if (result.isQuotaExceeded()) {
@@ -714,5 +818,47 @@ public class UploadServiceImpl implements IUploadService {
         }
 
         return nameWithoutExt + extension;
+    }
+
+    /**
+     * 判断是否是媒体文件
+     */
+    private boolean isMediaFile(String fileName) {
+        if (fileName == null) return false;
+        int dot = fileName.lastIndexOf('.');
+        if (dot < 0) return false;
+        String ext = fileName.substring(dot + 1).toLowerCase();
+        return ext.matches("mkv|mp4|avi|mov|ts|m2ts|wmv|flv|rmvb|m4v|webm");
+    }
+
+    /**
+     * 构建格式化后的文件名（与 BatchFormatRenameServiceImpl 逻辑一致）
+     */
+    private String buildFormattedFilename(com.gdupload.dto.ArchiveAnalyzeResult r) {
+        StringBuilder sb = new StringBuilder();
+        if (r.getTitle() != null && !r.getTitle().isEmpty()) sb.append(r.getTitle());
+
+        if (r.getSeason() != null && r.getEpisode() != null) {
+            sb.append(" S").append(r.getSeason()).append("E").append(r.getEpisode());
+        } else if (r.getEpisode() != null) {
+            sb.append(" E").append(r.getEpisode());
+        } else if ("movie".equals(r.getMediaType()) && r.getYear() != null) {
+            sb.append(" (").append(r.getYear()).append(")");
+        }
+
+        if (r.getResolution() != null) sb.append(" ").append(r.getResolution());
+
+        java.util.List<String> codecs = new java.util.ArrayList<>();
+        if (r.getVideoCodec() != null) codecs.add(r.getVideoCodec());
+        if (r.getAudioCodec() != null) codecs.add(r.getAudioCodec());
+        if (!codecs.isEmpty()) sb.append(".").append(String.join(".", codecs));
+
+        if (r.getSubtitleGroup() != null && !r.getSubtitleGroup().isEmpty()) {
+            sb.append("-").append(r.getSubtitleGroup());
+        }
+
+        if (r.getExtension() != null) sb.append(".").append(r.getExtension());
+
+        return sb.toString();
     }
 }

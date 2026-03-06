@@ -1,14 +1,17 @@
 package com.gdupload.service.impl;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gdupload.dto.ArchiveAnalyzeResult;
 import com.gdupload.dto.GdFileItem;
 import com.gdupload.dto.MediaInfoDto;
-import com.gdupload.dto.PagedResult;
 import com.gdupload.service.IArchiveService;
 import com.gdupload.service.IBatchFormatRenameService;
 import com.gdupload.service.IGdFileManagerService;
+import com.gdupload.util.RcloneUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.text.SimpleDateFormat;
@@ -22,16 +25,30 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class BatchFormatRenameServiceImpl implements IBatchFormatRenameService {
 
-    private final IArchiveService    archiveService;
+    private final IArchiveService       archiveService;
     private final IGdFileManagerService gdFileManagerService;
+    private final RcloneUtil            rcloneUtil;
+    private final ObjectMapper          objectMapper;
 
     /** 支持的媒体文件扩展名 */
     private static final Set<String> MEDIA_EXTS = new HashSet<>(Arrays.asList(
             "mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "rmvb", "m4v", "webm"
     ));
 
+    /** 文件处理并发数（ffprobe via rclone cat 是 I/O 密集型，线程可以远多于 CPU 核数） */
+    @Value("${app.format-rename.process-concurrency:32}")
+    private int processConcurrency;
+
     /** 任务表（内存，无需持久化） */
     private final Map<String, TaskStatus> taskMap = new ConcurrentHashMap<>();
+
+    /**
+     * 目录级编码缓存：同一目录下的文件编码通常完全相同（同一压制组的季合集）。
+     * 对第一个文件做 ffprobe，其余文件直接复用结果，跳过下载。
+     * key = 父目录路径，value = [videoCodec, audioCodec, resolution]（null 表示探测失败）
+     */
+    private static final int DIR_CODEC_CACHE_MAX = 5000;  // 提高缓存容量
+    private final Map<String, String[]> dirCodecCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     private final ExecutorService executor = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r);
@@ -91,10 +108,26 @@ public class BatchFormatRenameServiceImpl implements IBatchFormatRenameService {
     // ─── 核心逻辑 ───────────────────────────────────────────────────────────────
 
     private void runTask(String rcloneConfigName, String dirPath, TaskStatus status) {
+        dirCodecCache.clear(); // 每次新任务清空目录编码缓存
         status.addLog("开始扫描目录: " + (dirPath.isEmpty() ? "根目录" : dirPath));
 
-        // 1. 收集所有媒体文件（递归遍历子目录）
-        List<GdFileItem> mediaFiles = collectMediaFiles(rcloneConfigName, dirPath, status);
+        // 1. 一次性递归列举所有文件（单条 rclone lsjson --recursive，比逐目录分页快数十倍）
+        List<GdFileItem> mediaFiles;
+        try {
+            String json = rcloneUtil.listJsonRecursive(rcloneConfigName, dirPath);
+            List<GdFileItem> allItems = objectMapper.readValue(json, new TypeReference<List<GdFileItem>>() {});
+            mediaFiles = allItems.stream()
+                    .filter(f -> !Boolean.TRUE.equals(f.getIsDir()))
+                    .filter(f -> isMediaFile(f.getName()))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.error("[BatchFormatRename] 扫描目录失败", e);
+            status.phase = "ERROR";
+            status.errorMessage = "扫描目录失败: " + e.getMessage();
+            status.addLog("✗ 扫描失败: " + e.getMessage());
+            return;
+        }
+
         status.total.set(mediaFiles.size());
         status.addLog("发现 " + mediaFiles.size() + " 个媒体文件");
 
@@ -104,26 +137,56 @@ public class BatchFormatRenameServiceImpl implements IBatchFormatRenameService {
             return;
         }
 
-        // 2. 逐文件处理
-        for (GdFileItem item : mediaFiles) {
-            if (status.cancelled) {
-                status.addLog("任务已取消");
-                break;
-            }
+        // 2. 按目录分组（提高缓存命中率：同目录文件连续处理，第1个ffprobe后其余走缓存）
+        Map<String, List<GdFileItem>> dirGroups = mediaFiles.stream()
+                .collect(Collectors.groupingBy(item -> {
+                    String path = item.getPath();
+                    return path.contains("/") ? path.substring(0, path.lastIndexOf('/')) : "";
+                }, LinkedHashMap::new, Collectors.toList()));
+        status.addLog("分组到 " + dirGroups.size() + " 个目录");
 
-            String fileName = item.getName();
-            String filePath = item.getPath(); // rclone 返回的相对路径（相对于 dirPath 的父目录）
-            status.currentFile = fileName;
+        // 3. 并行处理（ffprobe via rclone cat 是主瓶颈，多线程并行大幅提速）
+        int concurrency = Math.max(1, processConcurrency);
+        status.addLog("并发线程数: " + concurrency);
+        ExecutorService filePool = Executors.newFixedThreadPool(concurrency, r -> {
+            Thread t = new Thread(r);
+            t.setDaemon(true);
+            t.setName("fmt-rename-worker");
+            return t;
+        });
 
-            try {
-                processFile(rcloneConfigName, filePath, fileName, status);
-            } catch (Exception e) {
-                log.warn("[BatchFormatRename] 处理失败: {}, err={}", fileName, e.getMessage());
-                status.failed.incrementAndGet();
-                status.addLog("✗ 失败: " + fileName + " — " + e.getMessage());
-            } finally {
-                status.processed.incrementAndGet();
+        // 按目录投递任务（同目录文件顺序提交，利用缓存）
+        for (List<GdFileItem> dirFiles : dirGroups.values()) {
+            for (GdFileItem item : dirFiles) {
+                if (status.cancelled) break;
+
+                // listJsonRecursive 返回的 Path 相对于 dirPath，拼接还原完整路径
+                final String fullPath = dirPath.isEmpty()
+                        ? item.getPath()
+                        : dirPath + "/" + item.getPath();
+                final String fileName = item.getName();
+
+                filePool.submit(() -> {
+                    if (status.cancelled) return;
+                    status.currentFile = fileName;
+                    try {
+                        processFile(rcloneConfigName, fullPath, fileName, status);
+                    } catch (Exception e) {
+                        log.warn("[BatchFormatRename] 处理失败: {}, err={}", fileName, e.getMessage());
+                        status.failed.incrementAndGet();
+                        status.addLog("✗ 失败: " + fileName + " — " + e.getMessage());
+                    } finally {
+                        status.processed.incrementAndGet();
+                    }
+                });
             }
+        }
+
+        filePool.shutdown();
+        try {
+            filePool.awaitTermination(24, TimeUnit.HOURS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
         }
 
         status.currentFile = "";
@@ -145,14 +208,44 @@ public class BatchFormatRenameServiceImpl implements IBatchFormatRenameService {
         // 1. 正则解析文件名
         ArchiveAnalyzeResult analyzed = archiveService.analyzeFilename(fileName);
 
-        // 2. 已有视频编码 → 跳过
-        if (analyzed.getVideoCodec() != null && !analyzed.getVideoCodec().isEmpty()) {
+        // 2. 判断是否已符合归档命名规范 → 跳过
+        // 标准格式：标题 S01E01 1080p.HEVC.AAC-字幕组.mkv
+        // 必须有：标题、分辨率、视频编码
+        boolean hasTitle = analyzed.getTitle() != null && !analyzed.getTitle().trim().isEmpty();
+        boolean hasResolution = analyzed.getResolution() != null && !analyzed.getResolution().trim().isEmpty();
+        boolean hasVideoCodec = analyzed.getVideoCodec() != null && !analyzed.getVideoCodec().trim().isEmpty();
+
+        if (hasTitle && hasResolution && hasVideoCodec) {
+            // 已符合归档命名规范，跳过 ffprobe
             status.skipped.incrementAndGet();
             return;
         }
 
         // 3. ffprobe 探测编码（via rclone cat 管道）
-        MediaInfoDto mediaInfo = archiveService.getMediaInfo(filePath, rcloneConfigName);
+        //    优先查目录级缓存：同季目录的集数编码几乎100%相同，命中则跳过下载
+        String parentDir = filePath.contains("/")
+                ? filePath.substring(0, filePath.lastIndexOf('/')) : "";
+
+        MediaInfoDto mediaInfo;
+        String[] cached = dirCodecCache.get(parentDir);
+        if (cached != null) {
+            // 缓存命中：直接构造 MediaInfoDto，免去 rclone cat + ffprobe
+            mediaInfo = new MediaInfoDto();
+            mediaInfo.setVideoCodec(cached[0]);
+            mediaInfo.setAudioCodec(cached[1]);
+            mediaInfo.setResolution(cached[2]);
+            log.debug("目录缓存命中: {} → [{}, {}, {}]", parentDir, cached[0], cached[1], cached[2]);
+        } else {
+            mediaInfo = archiveService.getMediaInfo(filePath, rcloneConfigName);
+            if (mediaInfo != null && dirCodecCache.size() < DIR_CODEC_CACHE_MAX) {
+                // 写入缓存（允许 null 值字段，表示该目录探测到的部分信息）
+                dirCodecCache.put(parentDir, new String[]{
+                        mediaInfo.getVideoCodec(),
+                        mediaInfo.getAudioCodec(),
+                        mediaInfo.getResolution()
+                });
+            }
+        }
         if (mediaInfo == null) {
             status.skipped.incrementAndGet();
             status.addLog("跳过(ffprobe无结果): " + fileName);
@@ -198,50 +291,6 @@ public class BatchFormatRenameServiceImpl implements IBatchFormatRenameService {
         status.renamed.incrementAndGet();
         status.addLog("✓ " + fileName + "\n   → " + newFilename);
         log.info("[BatchFormatRename] 重命名: {} → {}", filePath, newPath);
-    }
-
-    // ─── 辅助：收集媒体文件 ────────────────────────────────────────────────────
-
-    private List<GdFileItem> collectMediaFiles(String rcloneConfigName, String dirPath, TaskStatus status) {
-        List<GdFileItem> result = new ArrayList<>();
-        collectRecursive(rcloneConfigName, dirPath, result, status);
-        return result;
-    }
-
-    private void collectRecursive(String rcloneConfigName, String dirPath,
-                                   List<GdFileItem> result, TaskStatus status) {
-        if (status.cancelled) return;
-        int page = 1;
-        final int PAGE_SIZE = 200;
-        List<String> subDirPaths = new ArrayList<>();
-        while (true) {
-            if (status.cancelled) return;
-            PagedResult<GdFileItem> paged;
-            try {
-                paged = gdFileManagerService.listFiles(rcloneConfigName, dirPath, page, PAGE_SIZE);
-            } catch (Exception e) {
-                log.warn("[BatchFormatRename] 跳过无法访问的目录: {}, err={}", dirPath, e.getMessage());
-                return;
-            }
-            List<GdFileItem> items = paged.getItems();
-            if (items == null || items.isEmpty()) break;
-
-            for (GdFileItem item : items) {
-                if (Boolean.TRUE.equals(item.getIsDir())) {
-                    subDirPaths.add(item.getPath());
-                } else if (isMediaFile(item.getName())) {
-                    result.add(item);
-                }
-            }
-
-            if (items.size() < PAGE_SIZE) break;
-            page++;
-        }
-        for (String subPath : subDirPaths) {
-            if (status.cancelled) return;
-            status.addLog("扫描子目录: " + subPath);
-            collectRecursive(rcloneConfigName, subPath, result, status);
-        }
     }
 
     private boolean isMediaFile(String name) {

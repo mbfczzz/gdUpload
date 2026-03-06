@@ -113,6 +113,44 @@ public class GdFileManagerController {
         return Result.success();
     }
 
+    // ─── 空文件夹清理 ──────────────────────────────────────────────────────────
+
+    /**
+     * 删除单个空目录（递归检查子目录也为空才删除）
+     */
+    @DeleteMapping("/empty-dir")
+    public Result<Map<String, Object>> deleteEmptyDir(@RequestBody DeleteDirRequest req) {
+        GdAccount account = getValidAccount(req.getAccountId());
+        boolean deleted = gdFileManagerService.deleteEmptyDirectory(account.getRcloneConfigName(), req.getDirPath());
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("deleted", deleted);
+        result.put("message", deleted ? "空目录已删除" : "该目录非空，未删除");
+        return Result.success(result);
+    }
+
+    /**
+     * 批量清理当前路径下的所有空文件夹
+     */
+    @PostMapping("/clean-empty-dirs")
+    public Result<Map<String, Object>> cleanEmptyDirs(@RequestBody CleanEmptyRequest req) {
+        GdAccount account = getValidAccount(req.getAccountId());
+        Map<String, Object> result = gdFileManagerService.cleanEmptyDirectories(
+                account.getRcloneConfigName(), req.getBasePath() != null ? req.getBasePath() : "");
+        return Result.success(result);
+    }
+
+    /**
+     * 去重合并：合并同名文件夹、清理重复文件（rclone dedupe）
+     * Google Drive 允许同名文件夹并存，此接口会将内容合并到一个文件夹并删除空的重复目录
+     */
+    @PostMapping("/dedupe")
+    public Result<Map<String, Object>> dedupe(@RequestBody DedupeRequest req) {
+        GdAccount account = getValidAccount(req.getAccountId());
+        Map<String, Object> result = gdFileManagerService.deduplicatePath(
+                account.getRcloneConfigName(), req.getPath() != null ? req.getPath() : "");
+        return Result.success(result);
+    }
+
     private GdAccount getValidAccount(Long accountId) {
         GdAccount account = accountService.getById(accountId);
         if (account == null) {
@@ -151,5 +189,17 @@ public class GdFileManagerController {
     public static class BatchFormatRequest {
         private Long accountId;
         private String dirPath;
+    }
+
+    @Data
+    public static class CleanEmptyRequest {
+        private Long accountId;
+        private String basePath;
+    }
+
+    @Data
+    public static class DedupeRequest {
+        private Long accountId;
+        private String path;
     }
 }

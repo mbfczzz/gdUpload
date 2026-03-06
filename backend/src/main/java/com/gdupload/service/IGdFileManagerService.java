@@ -3,6 +3,9 @@ package com.gdupload.service;
 import com.gdupload.dto.GdFileItem;
 import com.gdupload.dto.PagedResult;
 
+import java.util.List;
+import java.util.Map;
+
 /**
  * GD文件管理服务接口
  */
@@ -52,4 +55,23 @@ public interface IGdFileManagerService {
      * @param path 目录路径
      */
     void makeDirectory(String rcloneConfigName, String path);
+
+    /**
+     * 删除单个空目录（递归检查：子目录下也没有文件才算空）
+     *
+     * @return true=已删除, false=非空未删除
+     */
+    boolean deleteEmptyDirectory(String rcloneConfigName, String dirPath);
+
+    /**
+     * 批量清理指定路径下的所有空文件夹
+     *
+     * @return 删除结果：deleted(已删名称列表), skipped(非空跳过数), total(扫描总目录数)
+     */
+    Map<String, Object> cleanEmptyDirectories(String rcloneConfigName, String basePath);
+
+    /**
+     * 对指定路径去重：合并同名文件夹、清理重复文件（rclone dedupe）
+     */
+    Map<String, Object> deduplicatePath(String rcloneConfigName, String path);
 }

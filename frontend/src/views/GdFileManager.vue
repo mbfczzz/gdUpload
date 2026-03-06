@@ -42,6 +42,14 @@
             <el-icon><FolderAdd /></el-icon>
             新建文件夹
           </el-button>
+          <el-button type="warning" @click="confirmCleanEmptyDirs" :loading="cleanEmptyLoading">
+            <el-icon><Delete /></el-icon>
+            清理空文件夹
+          </el-button>
+          <el-button type="danger" @click="confirmDedupe" :loading="dedupeLoading">
+            <el-icon><MagicStick /></el-icon>
+            去重合并
+          </el-button>
           <el-button @click="refreshList">
             <el-icon><Refresh /></el-icon>
             刷新
@@ -132,6 +140,20 @@
                   size="small"
                   @click.stop="openStrmDialog(row)"
                 >生成STRM</el-button>
+                <el-button
+                  v-if="row.isDir"
+                  type="warning"
+                  link
+                  size="small"
+                  @click.stop="confirmDeleteEmptyDir(row)"
+                >删除空目录</el-button>
+                <el-button
+                  v-if="row.isDir"
+                  type="danger"
+                  link
+                  size="small"
+                  @click.stop="confirmDedupeDir(row)"
+                >去重</el-button>
                 <el-button
                   type="primary"
                   link
@@ -238,7 +260,7 @@
 import { ref, computed, onMounted, shallowRef } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getAccountList } from '@/api/account'
-import { listFiles, deleteFile, deleteDir, moveItem, mkdir } from '@/api/gdFileManager'
+import { listFiles, deleteFile, deleteDir, moveItem, mkdir, deleteEmptyDir, cleanEmptyDirs, dedupePath } from '@/api/gdFileManager'
 import { startBatchArchive } from '@/api/archive'
 import ArchiveDialog from '@/components/ArchiveDialog.vue'
 import StrmDialog from '@/components/StrmDialog.vue'
@@ -521,6 +543,129 @@ function onBatchFormatBackground(info) {
 function onBatchFormatDone() {
   bgTask.value = null
   refreshList()
+}
+
+// ---- 删除空目录（单个） ----
+async function confirmDeleteEmptyDir(row) {
+  const dirPath = currentPath.value
+    ? `${currentPath.value}/${row.name}`
+    : row.name
+  try {
+    await ElMessageBox.confirm(
+      `将检查目录 "${row.name}" 及其所有子目录，只有完全没有文件时才会删除。\n\n确认检查并删除空目录？`,
+      '删除空目录',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch { return }
+
+  try {
+    const res = await deleteEmptyDir(selectedAccountId.value, dirPath)
+    if (res.data?.deleted) {
+      ElMessage.success(`空目录 "${row.name}" 已删除`)
+      refreshList()
+    } else {
+      ElMessage.info(`目录 "${row.name}" 非空，未删除`)
+    }
+  } catch (e) {
+    ElMessage.error('删除失败: ' + (e?.message || e))
+  }
+}
+
+// ---- 批量清理空文件夹 ----
+const cleanEmptyLoading = ref(false)
+
+async function confirmCleanEmptyDirs() {
+  if (!selectedAccountId.value) {
+    ElMessage.warning('请先选择账号')
+    return
+  }
+  const pathDesc = currentPath.value || '根目录'
+  try {
+    await ElMessageBox.confirm(
+      `将扫描 "${pathDesc}" 下的所有子文件夹，递归检查每个文件夹是否包含文件。\n\n只删除完全没有文件的空文件夹，不会误删任何包含文件的目录。\n\n确认开始扫描？`,
+      '批量清理空文件夹',
+      { confirmButtonText: '开始扫描', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch { return }
+
+  cleanEmptyLoading.value = true
+  try {
+    const res = await cleanEmptyDirs(selectedAccountId.value, currentPath.value)
+    const data = res.data || {}
+    const deletedList = data.deleted || []
+    if (deletedList.length > 0) {
+      ElMessage.success(`已清理 ${deletedList.length} 个空文件夹: ${deletedList.join(', ')}`)
+      refreshList()
+    } else {
+      ElMessage.info(`扫描了 ${data.total || 0} 个子文件夹，没有发现空文件夹`)
+    }
+  } catch (e) {
+    ElMessage.error('清理失败: ' + (e?.message || e))
+  } finally {
+    cleanEmptyLoading.value = false
+  }
+}
+
+// ---- 去重合并（解决GD同名文件夹问题） ----
+const dedupeLoading = ref(false)
+
+async function confirmDedupe() {
+  if (!selectedAccountId.value) {
+    ElMessage.warning('请先选择账号')
+    return
+  }
+  const pathDesc = currentPath.value || '根目录'
+  try {
+    await ElMessageBox.confirm(
+      `将对 "${pathDesc}" 执行去重合并操作：\n\n` +
+      `1. 合并同名文件夹（将内容移到一个文件夹中，删除空的重复目录）\n` +
+      `2. 清理重复文件（同名文件保留最新的）\n\n` +
+      `此操作针对 Google Drive 上因并发创建产生的同名文件夹问题。`,
+      '去重合并',
+      { confirmButtonText: '开始去重', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch { return }
+
+  dedupeLoading.value = true
+  try {
+    const res = await dedupePath(selectedAccountId.value, currentPath.value)
+    if (res.data?.success) {
+      ElMessage.success('去重合并完成')
+      refreshList()
+    } else {
+      ElMessage.error('去重失败: ' + (res.data?.message || '未知错误'))
+    }
+  } catch (e) {
+    ElMessage.error('去重失败: ' + (e?.message || e))
+  } finally {
+    dedupeLoading.value = false
+  }
+}
+
+async function confirmDedupeDir(row) {
+  const dirPath = currentPath.value
+    ? `${currentPath.value}/${row.name}`
+    : row.name
+  try {
+    await ElMessageBox.confirm(
+      `将对目录 "${row.name}" 执行去重合并：\n\n` +
+      `合并该目录下的同名子文件夹，清理重复文件（保留最新）。`,
+      '目录去重',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch { return }
+
+  try {
+    const res = await dedupePath(selectedAccountId.value, dirPath)
+    if (res.data?.success) {
+      ElMessage.success(`目录 "${row.name}" 去重完成`)
+      refreshList()
+    } else {
+      ElMessage.error('去重失败: ' + (res.data?.message || '未知错误'))
+    }
+  } catch (e) {
+    ElMessage.error('去重失败: ' + (e?.message || e))
+  }
 }
 
 // ---- 批量归档（目录） ----

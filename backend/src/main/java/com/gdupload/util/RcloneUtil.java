@@ -12,6 +12,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -59,6 +60,14 @@ public class RcloneUtil {
     private Integer timeout;
 
     /**
+     * 目录创建去重：防止并发 mkdir 在 Google Drive 上产生多个同名文件夹。
+     * key = "remoteName:path"，value 为 per-path 锁对象。
+     * 已成功创建的路径记录在 createdDirs 中，后续请求直接跳过。
+     */
+    private final ConcurrentHashMap<String, Object>  dirLocks   = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Boolean> createdDirs = new ConcurrentHashMap<>();
+
+    /**
      * 上传文件到Google Drive
      *
      * @param sourcePath 源文件路径
@@ -68,6 +77,14 @@ public class RcloneUtil {
      * @return 上传结果
      */
     public RcloneResult uploadFile(String sourcePath, String remoteName, String targetPath, Consumer<String> logConsumer) {
+        // 预创建目标目录，防止并发上传时 GD 产生同名文件夹
+        if (StrUtil.isNotBlank(targetPath)) {
+            String dir = targetPath.endsWith("/") ? targetPath.substring(0, targetPath.length() - 1) : targetPath;
+            if (!dir.isEmpty()) {
+                makeDirectory(remoteName, dir);
+            }
+        }
+
         List<String> command = new ArrayList<>();
         command.add(rclonePath);
         command.add("move");
@@ -128,6 +145,14 @@ public class RcloneUtil {
      * 与 uploadFile (rclone move) 不同，moveto 不会把源路径当目录遍历，适合单文件上传。
      */
     public RcloneResult uploadSingleFileTo(String localFilePath, String remoteName, String targetFilePath, Consumer<String> logConsumer) {
+        // 预创建目标父目录，防止并发上传时 GD 产生同名文件夹
+        if (StrUtil.isNotBlank(targetFilePath) && targetFilePath.contains("/")) {
+            String parentDir = targetFilePath.substring(0, targetFilePath.lastIndexOf('/'));
+            if (!parentDir.isEmpty()) {
+                makeDirectory(remoteName, parentDir);
+            }
+        }
+
         List<String> command = new ArrayList<>();
         command.add(rclonePath);
         command.add("moveto");
@@ -168,6 +193,14 @@ public class RcloneUtil {
      * @return 上传结果
      */
     public RcloneResult copyWithResume(String sourcePath, String remoteName, String targetPath, Consumer<String> logConsumer) {
+        // 预创建目标目录，防止并发上传时 GD 产生同名文件夹
+        if (StrUtil.isNotBlank(targetPath)) {
+            String dir = targetPath.endsWith("/") ? targetPath.substring(0, targetPath.length() - 1) : targetPath;
+            if (!dir.isEmpty()) {
+                makeDirectory(remoteName, dir);
+            }
+        }
+
         List<String> command = new ArrayList<>();
         command.add(rclonePath);
         command.add("move");
@@ -807,29 +840,116 @@ public class RcloneUtil {
     }
 
     /**
-     * 创建远程目录
+     * 创建远程目录（带去重：同一 remote:path 只会调一次 rclone mkdir，防止 GD 产生同名文件夹）
      *
      * @param remoteName rclone远程配置名称
      * @param path 目录路径
      * @return 是否成功
      */
     public boolean makeDirectory(String remoteName, String path) {
-        List<String> command = new ArrayList<>();
-        command.add(rclonePath);
-        command.add("mkdir");
-        command.add(remoteName + ":" + path);
-        command.add("--config");
-        command.add(rcloneConfigPath);
+        if (StrUtil.isBlank(path)) return true;
 
-        try {
-            ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-            int exitCode = process.waitFor();
-            return exitCode == 0;
-        } catch (Exception e) {
-            log.error("创建目录失败: remoteName={}, path={}", remoteName, path, e);
-            return false;
+        String key = remoteName + ":" + path;
+
+        // 快速路径：已创建过则直接返回
+        if (createdDirs.containsKey(key)) {
+            log.debug("目录已在缓存中，跳过创建: {}", key);
+            return true;
+        }
+
+        // per-path 锁：同一路径只有一个线程执行 mkdir
+        Object lock = dirLocks.computeIfAbsent(key, k -> new Object());
+        synchronized (lock) {
+            // double-check
+            if (createdDirs.containsKey(key)) {
+                log.debug("目录已在缓存中(double-check)，跳过创建: {}", key);
+                return true;
+            }
+
+            log.info("========== 开始创建目录 ==========");
+            log.info("远程名称: {}", remoteName);
+            log.info("目录路径: {}", path);
+
+            // 先检查目录是否已存在（使用lsd检查目录本身）
+            try {
+                log.info(">>> 步骤1: 检查目录是否已存在");
+                List<String> checkCmd = new ArrayList<>();
+                checkCmd.add(rclonePath);
+                checkCmd.add("lsd");
+                checkCmd.add(remoteName + ":" + path);
+                checkCmd.add("--config");
+                checkCmd.add(rcloneConfigPath);
+                checkCmd.add("--max-depth");
+                checkCmd.add("1");
+
+                log.info("检查命令: {}", String.join(" ", checkCmd));
+                ProcessBuilder checkPb = new ProcessBuilder(checkCmd);
+                checkPb.redirectErrorStream(true);
+                Process checkProcess = checkPb.start();
+
+                BufferedReader checkReader = new BufferedReader(new InputStreamReader(checkProcess.getInputStream(), StandardCharsets.UTF_8));
+                StringBuilder checkOutput = new StringBuilder();
+                String line;
+                while ((line = checkReader.readLine()) != null) {
+                    checkOutput.append(line).append("\n");
+                }
+
+                int checkExit = checkProcess.waitFor();
+                log.info("检查结果 - 退出码: {}, 输出: {}", checkExit, checkOutput.toString().trim());
+
+                if (checkExit == 0) {
+                    // 目录已存在
+                    log.info("✓ 目录已存在，无需创建");
+                    createdDirs.put(key, Boolean.TRUE);
+                    log.info("=====================================");
+                    return true;
+                } else {
+                    log.info("目录不存在，需要创建");
+                }
+            } catch (Exception e) {
+                log.warn("检查目录存在性失败，继续创建: {}", e.getMessage());
+            }
+
+            log.info(">>> 步骤2: 创建目录");
+            List<String> command = new ArrayList<>();
+            command.add(rclonePath);
+            command.add("mkdir");
+            command.add(remoteName + ":" + path);
+            command.add("--config");
+            command.add(rcloneConfigPath);
+
+            try {
+                log.info("创建命令: {}", String.join(" ", command));
+                ProcessBuilder pb = new ProcessBuilder(command);
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+                StringBuilder output = new StringBuilder();
+                String mkdirLine;
+                while ((mkdirLine = reader.readLine()) != null) {
+                    output.append(mkdirLine).append("\n");
+                    log.info("mkdir输出: {}", mkdirLine);
+                }
+
+                int exitCode = process.waitFor();
+                log.info("创建结果 - 退出码: {}", exitCode);
+
+                if (exitCode == 0) {
+                    log.info("✓ 目录创建成功");
+                    createdDirs.put(key, Boolean.TRUE);
+                    log.info("=====================================");
+                    return true;
+                } else {
+                    log.error("✗ 目录创建失败 - 退出码: {}, 输出: {}", exitCode, output.toString().trim());
+                    log.info("=====================================");
+                    return false;
+                }
+            } catch (Exception e) {
+                log.error("✗ 目录创建异常: remoteName={}, path={}", remoteName, path, e);
+                log.info("=====================================");
+                return false;
+            }
         }
     }
 
@@ -842,6 +962,14 @@ public class RcloneUtil {
      * @return 重命名结果
      */
     public RcloneResult renameFile(String remoteName, String oldPath, String newPath) {
+        // 预创建目标父目录，防止跨目录重命名时 GD 产生同名文件夹
+        if (StrUtil.isNotBlank(newPath) && newPath.contains("/")) {
+            String parentDir = newPath.substring(0, newPath.lastIndexOf('/'));
+            if (!parentDir.isEmpty()) {
+                makeDirectory(remoteName, parentDir);
+            }
+        }
+
         List<String> command = new ArrayList<>();
         command.add(rclonePath);
         command.add("moveto");
@@ -853,5 +981,31 @@ public class RcloneUtil {
 
         log.info("执行rclone重命名: {} -> {}", oldPath, newPath);
         return executeCommand(command, line -> log.debug("重命名输出: {}", line));
+    }
+
+    /**
+     * 对 Google Drive 去重：合并同名文件夹、清理重复文件。
+     * rclone dedupe 会将同名目录的内容合并到一个目录中，删除空的重复目录。
+     * 对于同名文件使用 newest 策略（保留最新的）。
+     *
+     * @param remoteName rclone远程配置名称
+     * @param path       目录路径（空字符串表示对整个远端去重）
+     * @param logConsumer 日志消费者（可为 null）
+     * @return 执行结果
+     */
+    public RcloneResult dedupe(String remoteName, String path, Consumer<String> logConsumer) {
+        List<String> command = new ArrayList<>();
+        command.add(rclonePath);
+        command.add("dedupe");
+        command.add("--dedupe-mode");
+        command.add("newest");
+        String remotePath = StrUtil.isBlank(path) ? remoteName + ":" : remoteName + ":" + path;
+        command.add(remotePath);
+        command.add("--config");
+        command.add(rcloneConfigPath);
+        command.add("-v");
+
+        log.info("执行rclone dedupe: remotePath={}", remotePath);
+        return executeCommand(command, logConsumer != null ? logConsumer : line -> log.info("dedupe: {}", line));
     }
 }

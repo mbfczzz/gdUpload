@@ -15,6 +15,7 @@ import com.gdupload.entity.ArchiveHistory;
 import com.gdupload.mapper.ArchiveHistoryMapper;
 import com.gdupload.service.IArchiveService;
 import com.gdupload.service.ISmartSearchConfigService;
+import com.gdupload.util.RcloneUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,6 +40,7 @@ public class ArchiveServiceImpl implements IArchiveService {
 
     private final ArchiveHistoryMapper archiveHistoryMapper;
     private final ISmartSearchConfigService smartSearchConfigService;
+    private final RcloneUtil rcloneUtil;
 
     @Value("${app.archive.target-path:/video2}")
     private String archiveTargetPath;
@@ -894,16 +896,17 @@ public class ArchiveServiceImpl implements IArchiveService {
     }
 
     private void runRcloneMoveto(String src, String dest) throws Exception {
-        // 先确保目标目录存在（moveto 不会自动创建父目录）
+        // 先确保目标目录存在（通过 RcloneUtil 带去重锁，防止并发创建同名文件夹）
         int lastSlash = dest.lastIndexOf('/');
         if (lastSlash > 0) {
             String destDir = dest.substring(0, lastSlash);
-            // 直接传参数列表，不经过 shell，路径中的特殊字符不影响
-            Process mkdirProc = new ProcessBuilder(
-                    rclonePath, "mkdir", "--config", rcloneConfigPath, destDir)
-                    .redirectErrorStream(true).start();
-            mkdirProc.waitFor(30, java.util.concurrent.TimeUnit.SECONDS);
-            // mkdir 失败不阻断（目录可能已存在）
+            // destDir 格式: "remoteName:path"，需拆分
+            int colonIdx = destDir.indexOf(':');
+            if (colonIdx > 0) {
+                String remoteName = destDir.substring(0, colonIdx);
+                String dirPath = destDir.substring(colonIdx + 1);
+                rcloneUtil.makeDirectory(remoteName, dirPath);
+            }
         }
 
         // 同样直接传参数列表，彻底避免 shell 特殊字符（单引号、括号、空格等）问题
@@ -998,8 +1001,8 @@ public class ArchiveServiceImpl implements IArchiveService {
 
     /** 本地文件：直接运行 ffprobe */
     private MediaInfoDto getMediaInfoLocal(String filePath) {
-        java.io.File file = new java.io.File(filePath);
-        if (!file.exists() || !file.isFile()) {
+        java.nio.file.Path path = java.nio.file.Paths.get(filePath);
+        if (!java.nio.file.Files.exists(path) || !java.nio.file.Files.isRegularFile(path)) {
             log.warn("getMediaInfo: 本地文件不存在 {}", filePath);
             return null;
         }
@@ -1022,61 +1025,99 @@ public class ArchiveServiceImpl implements IArchiveService {
     }
 
     /**
-     * 云端文件：rclone cat | head -c 15MB | ffprobe
-     * 读取文件头部 15MB，足以拿到 MKV/MP4(faststart) 的编解码信息
+     * 云端文件：rclone cat | ffprobe，三级递增探测策略：
+     *
+     * <pre>
+     * 第1级  头部 512KB  — MKV 的 EBML 头部通常 &lt;100KB，512KB 覆盖绝大多数情况
+     * 第2级  头部 8MB   — 大型 MP4 faststart（moov atom 在头部但较大）
+     * 第3级  尾部 5MB   — 无 faststart 的 MP4（moov atom 在文件末尾）
+     * </pre>
+     *
+     * 绝大多数文件（MKV + faststart MP4）在第1级命中，只需下载 512KB，
+     * 比原来的 50MB 快 ~100 倍，极大减少 GD 带宽消耗和等待时间。
      */
     private MediaInfoDto getMediaInfoViaRclone(String configName, String cloudPath) {
         try {
-            // bash 管道无法避免，对路径中的单引号做转义：' → '\''
             String escapedConfig = rcloneConfigPath.replace("'", "'\\''");
             String escapedPath   = cloudPath.replace("'", "'\\''");
 
-            // ── 第一次尝试：读头部 50MB ──────────────────────────────────────────
-            // 适合 MKV 和带 faststart 的 MP4（moov atom 在文件头部）
+            // 根据扩展名决定第1级探测量：MKV 只需 512KB，其他格式给 2MB
+            String ext = cloudPath.toLowerCase();
+            int dotIdx = ext.lastIndexOf('.');
+            ext = dotIdx > 0 ? ext.substring(dotIdx + 1) : "";
+            int firstBytes = "mkv".equals(ext) ? 524288 : 2097152; // 512KB or 2MB
+
+            // ── 第1级：读头部（512KB for MKV / 2MB for others）────────────────
             String cmd1 = String.format(
-                "%s cat --config '%s' '%s:%s' 2>/dev/null | head -c 52428800 | " +
+                "%s cat --config '%s' '%s:%s' 2>/dev/null | head -c %d | " +
                 "ffprobe -v quiet -print_format json -show_streams " +
-                "-probesize 52428800 -analyzeduration 100000 -i pipe:0 2>/dev/null",
-                rclonePath, escapedConfig, configName, escapedPath);
+                "-probesize %d -analyzeduration 100000 -i pipe:0 2>/dev/null",
+                rclonePath, escapedConfig, configName, escapedPath, firstBytes, firstBytes);
             ProcessBuilder pb1 = new ProcessBuilder("/bin/bash", "-c", cmd1);
             pb1.redirectErrorStream(false);
             Process p1 = pb1.start();
             String json1 = readOutput(p1);
-            p1.waitFor(90, java.util.concurrent.TimeUnit.SECONDS);
+            p1.waitFor(20, java.util.concurrent.TimeUnit.SECONDS);
             if (p1.isAlive()) p1.destroyForcibly();
 
             MediaInfoDto result = json1.isEmpty() ? null : parseMediaInfo(json1);
             if (result != null && result.getVideoCodec() != null) {
-                log.info("ffprobe 头部探测成功: configName={}, codec={}", configName, result.getVideoCodec());
+                log.debug("ffprobe 头部{}探测成功: codec={}, path={}", firstBytes / 1024 + "KB", result.getVideoCodec(), cloudPath);
                 return result;
             }
 
-            // ── 第二次尝试：读尾部 10MB ──────────────────────────────────────────
-            // 无 faststart 的 MP4 把 moov atom 放在文件末尾，需要从尾部读取
-            // rclone cat --offset 支持负数，-N 表示从文件末尾倒数 N 字节
-            log.info("头部探测未获取编码，尝试尾部 10MB: configName={}, path={}", configName, cloudPath);
+            // MKV 在 512KB 内未找到则基本无解，跳过后续大体积探测
+            if ("mkv".equals(ext)) {
+                log.warn("ffprobe MKV 探测失败（512KB 未找到编码）: path={}", cloudPath);
+                return result;
+            }
+
+            // ── 第2级：读头部 8MB（大型 faststart MP4）────────────────────────
+            log.debug("第1级未命中，尝试头部 8MB: path={}", cloudPath);
             String cmd2 = String.format(
-                "%s cat --config '%s' '%s:%s' --offset -10485760 2>/dev/null | " +
+                "%s cat --config '%s' '%s:%s' 2>/dev/null | head -c 8388608 | " +
                 "ffprobe -v quiet -print_format json -show_streams " +
-                "-probesize 10485760 -analyzeduration 100000 -i pipe:0 2>/dev/null",
+                "-probesize 8388608 -analyzeduration 100000 -i pipe:0 2>/dev/null",
                 rclonePath, escapedConfig, configName, escapedPath);
             ProcessBuilder pb2 = new ProcessBuilder("/bin/bash", "-c", cmd2);
             pb2.redirectErrorStream(false);
             Process p2 = pb2.start();
             String json2 = readOutput(p2);
-            p2.waitFor(60, java.util.concurrent.TimeUnit.SECONDS);
+            p2.waitFor(25, java.util.concurrent.TimeUnit.SECONDS);
             if (p2.isAlive()) p2.destroyForcibly();
 
             if (!json2.isEmpty()) {
                 MediaInfoDto result2 = parseMediaInfo(json2);
                 if (result2 != null && result2.getVideoCodec() != null) {
-                    log.info("ffprobe 尾部探测成功: configName={}, codec={}", configName, result2.getVideoCodec());
+                    log.debug("ffprobe 头部 8MB 探测成功: codec={}, path={}", result2.getVideoCodec(), cloudPath);
                     return result2;
                 }
             }
 
-            log.warn("ffprobe 头尾均未探测到编码: configName={}, path={}", configName, cloudPath);
-            return result; // 返回头部结果（可能含分辨率但无编码，或 null）
+            // ── 第3级：读尾部 5MB（无 faststart 的 MP4）──────────────────────
+            log.info("头部探测未获取编码，尝试尾部 5MB: path={}", cloudPath);
+            String cmd3 = String.format(
+                "%s cat --config '%s' '%s:%s' --offset -5242880 2>/dev/null | " +
+                "ffprobe -v quiet -print_format json -show_streams " +
+                "-probesize 5242880 -analyzeduration 100000 -i pipe:0 2>/dev/null",
+                rclonePath, escapedConfig, configName, escapedPath);
+            ProcessBuilder pb3 = new ProcessBuilder("/bin/bash", "-c", cmd3);
+            pb3.redirectErrorStream(false);
+            Process p3 = pb3.start();
+            String json3 = readOutput(p3);
+            p3.waitFor(20, java.util.concurrent.TimeUnit.SECONDS);
+            if (p3.isAlive()) p3.destroyForcibly();
+
+            if (!json3.isEmpty()) {
+                MediaInfoDto result3 = parseMediaInfo(json3);
+                if (result3 != null && result3.getVideoCodec() != null) {
+                    log.debug("ffprobe 尾部 5MB 探测成功: codec={}, path={}", result3.getVideoCodec(), cloudPath);
+                    return result3;
+                }
+            }
+
+            log.warn("ffprobe 三级探测均未找到编码: path={}", cloudPath);
+            return result;
         } catch (Exception e) {
             log.warn("ffprobe via rclone 失败: configName={}, path={}, err={}", configName, cloudPath, e.getMessage());
             return null;

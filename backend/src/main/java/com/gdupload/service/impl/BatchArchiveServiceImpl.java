@@ -19,8 +19,8 @@ import com.gdupload.service.IBatchArchiveService;
 import com.gdupload.service.IArchiveService;
 import com.gdupload.service.IGdAccountService;
 import com.gdupload.util.RcloneUtil;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -40,7 +40,6 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class BatchArchiveServiceImpl implements IBatchArchiveService {
 
     private final ArchiveBatchTaskMapper batchTaskMapper;
@@ -49,6 +48,40 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
     private final IGdAccountService accountService;
     private final RcloneUtil rcloneUtil;
     private final ObjectMapper objectMapper;
+
+    /** 批量归档并行线程数 */
+    @Value("${app.archive.batch-threads:24}")
+    private int batchThreads;
+
+    /** AI 并发调用数 */
+    @Value("${app.archive.ai-concurrency:3}")
+    private int aiConcurrency;
+
+    /** AI 调用最小间隔(ms) */
+    @Value("${app.archive.ai-call-interval:1000}")
+    private long aiCallInterval;
+
+    /** TMDB API 调用间隔(ms) */
+    @Value("${app.archive.tmdb-call-interval:100}")
+    private long tmdbCallInterval;
+
+    /** 进度刷DB间隔（每处理N个文件刷一次） */
+    @Value("${app.archive.db-flush-interval:5}")
+    private int dbFlushInterval;
+
+    public BatchArchiveServiceImpl(ArchiveBatchTaskMapper batchTaskMapper,
+                                   ArchiveHistoryMapper archiveHistoryMapper,
+                                   IArchiveService archiveService,
+                                   IGdAccountService accountService,
+                                   RcloneUtil rcloneUtil,
+                                   ObjectMapper objectMapper) {
+        this.batchTaskMapper = batchTaskMapper;
+        this.archiveHistoryMapper = archiveHistoryMapper;
+        this.archiveService = archiveService;
+        this.accountService = accountService;
+        this.rcloneUtil = rcloneUtil;
+        this.objectMapper = objectMapper;
+    }
 
     /** 支持的媒体文件后缀 */
     private static final Set<String> MEDIA_EXTENSIONS = new HashSet<>(Arrays.asList(
@@ -62,13 +95,8 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
     private static final Pattern DIR_TMDB_ID      = Pattern.compile("\\[tmdbid=\\d+\\]", Pattern.CASE_INSENSITIVE);
     private static final Pattern DIR_SEASON       = Pattern.compile("(?i)^(season|s)\\s*\\d+$");
 
-    /**
-     * AI 调用限流：同一时刻只允许 1 个线程调用 AI，且两次调用之间至少间隔 3 秒，
-     * 避免批量归档多线程同时打 OpenAI 代理触发 429/1015 限流。
-     */
-    private final Semaphore        aiCallSemaphore  = new Semaphore(1);
-    private volatile long          lastAiCallMillis = 0;
-    private static final long      AI_CALL_INTERVAL = 3_000; // ms
+    /** AI 调用最后时间戳（用于限速） */
+    private volatile long lastAiCallMillis = 0;
 
     // ─── 启动任务 ──────────────────────────────────────────────────────────────
 
@@ -103,7 +131,8 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         thread.setName("batch-archive-" + taskId);
         thread.start();
 
-        log.info("批量归档任务已创建: id={}, name={}, path={}", taskId, taskName, sourcePath);
+        log.info("批量归档任务已创建: id={}, name={}, path={}, threads={}",
+                taskId, taskName, sourcePath, batchThreads);
         return task;
     }
 
@@ -164,7 +193,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             }
 
             // 3. 预扫描：正则解析所有文件名，对"正则无法提取标题"的文件批量调用 AI
-            //    目的：将 N 次独立 AI 请求合并为少量批量请求，避免代理限流
             Map<String, List<ArchiveTmdbItem>> tmdbCache   = new ConcurrentHashMap<>();
             Map<String, ArchiveAnalyzeResult>  aiResultCache = preScanBatchAi(taskId, mediaFiles, tmdbCache);
             log.info("[{}] 预扫描完成，批量AI已缓存 {} 个文件", taskId, aiResultCache.size());
@@ -172,27 +200,32 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             // 取消标志
             AtomicInteger cancelFlag = new AtomicInteger(0);
 
-            // 8 线程并行（rclone moveto + TMDB 都是 I/O 密集型，线程多效果好）
-            ExecutorService pool = Executors.newFixedThreadPool(8, r -> {
+            // ── 原子计数器：替代每次 synchronized DB 读写，定期刷回 ──
+            AtomicInteger processedCounter = new AtomicInteger(0);
+            AtomicInteger successCounter   = new AtomicInteger(0);
+            AtomicInteger failedCounter    = new AtomicInteger(0);
+            AtomicInteger manualCounter    = new AtomicInteger(0);
+            AtomicInteger sinceLastFlush   = new AtomicInteger(0);
+
+            // 使用可配置线程数（I/O 密集型，rclone moveto + TMDB HTTP）
+            log.info("[{}] 启动 {} 线程并行处理", taskId, batchThreads);
+            ExecutorService pool = Executors.newFixedThreadPool(batchThreads, r -> {
                 Thread t = new Thread(r, "batch-archive-worker");
                 t.setDaemon(true);
                 return t;
             });
             List<Future<?>> futures = new ArrayList<>(mediaFiles.size());
 
-            // Semaphore 控制提交节奏：主线程最多让 8 个 worker 同时在跑，
-            // 每提交一个任务前必须先拿到许可，worker 完成后归还许可。
-            // 这样主线程会在拿许可的循环中持续检测暂停/取消，
-            // 使暂停命令能在下一个文件开始前真正生效。
-            final java.util.concurrent.Semaphore sem = new java.util.concurrent.Semaphore(8);
+            // Semaphore 控制提交节奏，与线程数一致
+            final Semaphore sem = new Semaphore(batchThreads);
+
+            // AI 调用限流信号量（可配置并发数）
+            final Semaphore aiSem = new Semaphore(aiConcurrency);
 
             for (GdFileItem file : mediaFiles) {
                 if (cancelFlag.get() != 0 || Thread.currentThread().isInterrupted()) break;
 
                 // 暂停 & 槽位等待：二合一循环
-                // - 状态为 PAUSED 时：sleep 2s 后继续检测（不提交）
-                // - 状态为 RUNNING 时：尝试 tryAcquire(2s)；若槽满则超时重循环
-                // - 状态为 FAILED/null 时：置取消标志并退出
                 while (true) {
                     ArchiveBatchTask snap = batchTaskMapper.selectById(taskId);
                     if (snap == null || "FAILED".equals(snap.getStatus())) {
@@ -209,25 +242,38 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                     }
                     // RUNNING：尝试拿信号量（2秒超时后回头重检DB状态）
                     try {
-                        if (sem.tryAcquire(2, TimeUnit.SECONDS)) break; // 拿到槽位，退出while
+                        if (sem.tryAcquire(2, TimeUnit.SECONDS)) break;
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         cancelFlag.set(1);
                         break;
                     }
-                    // 超时未拿到 → 继续循环，重新检测 DB 状态
                 }
                 if (cancelFlag.get() != 0) break;
 
                 final String fname = file.getName();
+                // 更新当前文件名（低频操作，直接写DB）
                 applyUpdate(taskId, t -> t.setCurrentFile(fname));
 
                 futures.add(pool.submit(() -> {
                     try {
                         if (cancelFlag.get() != 0) return;
-                        safeProcessOneFile(taskId, rcloneConfigName, sourcePath, file, tmdbCache, aiResultCache);
+                        int result = safeProcessOneFile(taskId, rcloneConfigName, sourcePath,
+                                file, tmdbCache, aiResultCache, aiSem);
+                        // 0=success, 1=failed, 2=manual
+                        processedCounter.incrementAndGet();
+                        if (result == 0) successCounter.incrementAndGet();
+                        else if (result == 1) failedCounter.incrementAndGet();
+                        else manualCounter.incrementAndGet();
+
+                        // 每 N 个文件刷一次 DB，减少锁争用
+                        if (sinceLastFlush.incrementAndGet() >= dbFlushInterval) {
+                            sinceLastFlush.set(0);
+                            flushCounters(taskId, processedCounter, successCounter,
+                                    failedCounter, manualCounter);
+                        }
                     } finally {
-                        sem.release(); // 归还槽位，主线程得以继续提交下一个
+                        sem.release();
                     }
                 }));
             }
@@ -239,13 +285,16 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 Thread.currentThread().interrupt();
             }
 
+            // 最终刷一次计数器
+            flushCounters(taskId, processedCounter, successCounter, failedCounter, manualCounter);
+
             // 4. 更新最终状态
             ArchiveBatchTask finalSnap = batchTaskMapper.selectById(taskId);
             if (finalSnap != null && !"FAILED".equals(finalSnap.getStatus())) {
                 boolean hasIssues = finalSnap.getManualCount() > 0 || finalSnap.getFailedCount() > 0;
                 String finalStatus = hasIssues ? "PARTIAL" : "COMPLETED";
                 applyUpdate(taskId, t -> { t.setStatus(finalStatus); t.setCurrentFile(null); });
-                log.info("[{}] 任务完成: status={}", taskId, finalStatus);
+                log.info("[{}] 任务完成: status={}, 线程数={}", taskId, finalStatus, batchThreads);
             }
 
         } catch (Exception e) {
@@ -254,18 +303,34 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         }
     }
 
-    // ─── 单文件处理 ───────────────────────────────────────────────────────────
+    // ─── 批量刷计数器到 DB ──────────────────────────────────────────────────────
 
-    private void safeProcessOneFile(Long taskId, String rcloneConfigName,
+    private synchronized void flushCounters(Long taskId,
+                                            AtomicInteger processed,
+                                            AtomicInteger success,
+                                            AtomicInteger failed,
+                                            AtomicInteger manual) {
+        ArchiveBatchTask t = batchTaskMapper.selectById(taskId);
+        if (t == null) return;
+        t.setProcessedFiles(processed.get());
+        t.setSuccessCount(success.get());
+        t.setFailedCount(failed.get());
+        t.setManualCount(manual.get());
+        batchTaskMapper.updateById(t);
+    }
+
+    // ─── 单文件处理（返回 0=success, 1=failed, 2=manual）──────────────────────
+
+    private int safeProcessOneFile(Long taskId, String rcloneConfigName,
                                     String sourcePath, GdFileItem file,
                                     Map<String, List<ArchiveTmdbItem>> tmdbCache,
-                                    Map<String, ArchiveAnalyzeResult> aiResultCache) {
+                                    Map<String, ArchiveAnalyzeResult> aiResultCache,
+                                    Semaphore aiSem) {
         String filename = file.getName();
-        // file.getPath() 是相对于 sourcePath 的路径
         String fullPath = buildFullPath(sourcePath, file.getPath());
 
         try {
-            // 0. 成人内容检测 — 直接标记人工处理，跳过 TMDB/AI 流程
+            // 0. 成人内容检测 — 直接标记人工处理
             if (isPornographic(filename)) {
                 log.info("[{}] 疑似成人内容，标记人工处理: {}", taskId, filename);
                 ArchiveHistory ph = new ArchiveHistory();
@@ -276,18 +341,14 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 ph.setProcessMethod("manual");
                 ph.setRemark("疑似成人内容，需人工审核");
                 archiveHistoryMapper.insert(ph);
-                applyUpdate(taskId, t -> {
-                    t.setProcessedFiles(t.getProcessedFiles() + 1);
-                    t.setManualCount(t.getManualCount() + 1);
-                });
-                return;
+                return 2; // manual
             }
 
             // 1. 正则解析文件名
             ArchiveAnalyzeResult analyzed = archiveService.analyzeFilename(filename);
             String processMethod = "tmdb";
 
-            // 2. 搜索 TMDB（带缓存：同一剧集多集只查一次 API）
+            // 2. 搜索 TMDB（带缓存）
             List<ArchiveTmdbItem> tmdbResults = Collections.emptyList();
             if (analyzed.getTitle() != null && !analyzed.getTitle().isEmpty()) {
                 final String analyzedTitle = analyzed.getTitle();
@@ -299,28 +360,25 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 boolean cacheHit = tmdbCache.containsKey(cacheKey);
                 tmdbResults = tmdbCache.computeIfAbsent(cacheKey, k ->
                         archiveService.searchTmdb(analyzedTitle, analyzedYear, analyzedType));
-                // 仅在实际发起 API 调用时限速（缓存命中则跳过 sleep）
                 if (!cacheHit && !tmdbResults.isEmpty()) {
-                    try { Thread.sleep(250); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                    sleepQuietly(tmdbCallInterval);
                 }
             }
 
             // 3. TMDB 无结果 → AI 兜底
-            //    优先使用预扫描批量 AI 缓存（preScanBatchAi 已处理无标题文件）
-            //    缓存未命中时降级为单次串行请求（加限速保护）
             if (tmdbResults.isEmpty()) {
                 try {
                     ArchiveAnalyzeResult aiResult = aiResultCache.get(filename);
                     if (aiResult == null) {
-                        // 预扫描未覆盖（有正则标题但 TMDB 失败），走单次限速请求
-                        aiCallSemaphore.acquire();
+                        // 预扫描未覆盖，走限速请求（可配置并发数）
+                        aiSem.acquire();
                         try {
                             long gap = System.currentTimeMillis() - lastAiCallMillis;
-                            if (gap < AI_CALL_INTERVAL) Thread.sleep(AI_CALL_INTERVAL - gap);
+                            if (gap < aiCallInterval) Thread.sleep(aiCallInterval - gap);
                             lastAiCallMillis = System.currentTimeMillis();
                             aiResult = archiveService.aiAnalyzeFilename(filename);
                         } finally {
-                            aiCallSemaphore.release();
+                            aiSem.release();
                         }
                     }
                     if (aiResult != null && aiResult.getTitle() != null && !aiResult.getTitle().isEmpty()) {
@@ -332,7 +390,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                         List<ArchiveTmdbItem> aiTmdb = tmdbCache.computeIfAbsent(aiKey, k ->
                                 archiveService.searchTmdb(finalAiResult.getTitle(), finalAiResult.getYear(), finalAiResult.getMediaType()));
                         if (!aiCacheHit && !aiTmdb.isEmpty()) {
-                            try { Thread.sleep(250); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                            sleepQuietly(tmdbCallInterval);
                         }
                         if (!aiTmdb.isEmpty()) {
                             analyzed = finalAiResult;
@@ -348,7 +406,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             }
 
             // 3.5. 仍无结果 → 用父目录名兜底搜索 TMDB
-            //      例：白日梦我 (2023)/沈倦获得大运会个人铜牌.mp4 → 搜"白日梦我"
             if (tmdbResults.isEmpty()) {
                 ArchiveAnalyzeResult parentAnalyzed = parseParentDir(fullPath);
                 if (parentAnalyzed != null) {
@@ -361,10 +418,9 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                     List<ArchiveTmdbItem> parentTmdb = tmdbCache.computeIfAbsent(parentKey, k ->
                             archiveService.searchTmdb(parentAnalyzed.getTitle(), parentAnalyzed.getYear(), null));
                     if (!parentCacheHit && !parentTmdb.isEmpty()) {
-                        try { Thread.sleep(250); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
+                        sleepQuietly(tmdbCallInterval);
                     }
                     if (!parentTmdb.isEmpty()) {
-                        // 用父目录的标题/年份，但保留文件名中解析出的季集等信息
                         analyzed.setTitle(parentAnalyzed.getTitle());
                         if (analyzed.getYear() == null) analyzed.setYear(parentAnalyzed.getYear());
                         if (analyzed.getMediaType() == null) analyzed.setMediaType(parentAnalyzed.getMediaType());
@@ -383,12 +439,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 boolean success = Boolean.TRUE.equals(res.get("success"));
                 log.info("[{}] 归档{}: {} → {}", taskId, success ? "成功" : "失败",
                         filename, res.get("targetPath"));
-
-                applyUpdate(taskId, t -> {
-                    t.setProcessedFiles(t.getProcessedFiles() + 1);
-                    if (success) t.setSuccessCount(t.getSuccessCount() + 1);
-                    else         t.setFailedCount(t.getFailedCount() + 1);
-                });
+                return success ? 0 : 1;
 
             } else {
                 // 4b. 无匹配 → 标记人工处理
@@ -401,11 +452,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 h.setProcessMethod("manual");
                 h.setRemark("批量归档无法自动匹配 TMDB");
                 archiveHistoryMapper.insert(h);
-
-                applyUpdate(taskId, t -> {
-                    t.setProcessedFiles(t.getProcessedFiles() + 1);
-                    t.setManualCount(t.getManualCount() + 1);
-                });
+                return 2; // manual
             }
 
         } catch (Exception e) {
@@ -418,11 +465,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             h.setProcessMethod("auto");
             h.setFailReason(e.getMessage());
             archiveHistoryMapper.insert(h);
-
-            applyUpdate(taskId, t -> {
-                t.setProcessedFiles(t.getProcessedFiles() + 1);
-                t.setFailedCount(t.getFailedCount() + 1);
-            });
+            return 1; // failed
         }
     }
 
@@ -463,11 +506,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
 
     // ─── 内部工具 ─────────────────────────────────────────────────────────────
 
-    /**
-     * 查询某任务下已完成（success）或已标记人工处理（manual_required）的文件路径集合，
-     * 用于续跑时跳过这些文件，避免重复处理。
-     * 失败（failed）的文件会重新尝试。
-     */
     private Set<String> loadProcessedPaths(Long taskId) {
         return archiveHistoryMapper.selectList(
                 new LambdaQueryWrapper<ArchiveHistory>()
@@ -480,7 +518,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 .collect(Collectors.toSet());
     }
 
-    /** 从 DB 读取 → 应用修改 → 写回，synchronized 防止并发 read-modify-write 丢失更新 */
+    /** 从 DB 读取 → 应用修改 → 写回（仅用于状态变更等低频操作） */
     private synchronized void applyUpdate(Long taskId, Consumer<ArchiveBatchTask> modifier) {
         ArchiveBatchTask t = batchTaskMapper.selectById(taskId);
         if (t == null) return;
@@ -488,21 +526,12 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         batchTaskMapper.updateById(t);
     }
 
-    /** 构建完整的远程相对路径 */
     private String buildFullPath(String sourcePath, String filePath) {
         if (sourcePath == null || sourcePath.isEmpty()) return filePath;
         if (filePath == null || filePath.isEmpty()) return sourcePath;
         return sourcePath + "/" + filePath;
     }
 
-    /**
-     * 从文件完整路径中提取父目录（或祖父目录）的标题和年份，用于 TMDB 兜底搜索。
-     * 处理格式：
-     *   白日梦我 (2023)/episode.mp4          → title=白日梦我, year=2023
-     *   白日梦我-2023-[tmdbid=123]/ep.mp4    → title=白日梦我, year=2023
-     *   白日梦我/Season 1/ep.mp4             → title=白日梦我, year=null（Season 目录会向上一级）
-     * 若无法解析有意义的标题则返回 null。
-     */
     private ArchiveAnalyzeResult parseParentDir(String fullPath) {
         int fileSlash = fullPath.lastIndexOf('/');
         if (fileSlash <= 0) return null;
@@ -512,7 +541,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 ? parentPath.substring(parentPath.lastIndexOf('/') + 1)
                 : parentPath;
 
-        // 若父目录是 Season 目录，则向上取祖父目录
         if (DIR_SEASON.matcher(dirName).matches()) {
             int grandSlash = parentPath.lastIndexOf('/');
             if (grandSlash <= 0) return null;
@@ -520,10 +548,8 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         }
         if (dirName.isEmpty()) return null;
 
-        // 去掉 [tmdbid=xxx]
         String cleaned = DIR_TMDB_ID.matcher(dirName).replaceAll("").trim();
 
-        // 提取年份：先尝试 (2023)，再尝试 -2023-
         String year = null;
         Matcher m = DIR_YEAR_PAREN.matcher(cleaned);
         if (m.find()) {
@@ -537,7 +563,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             }
         }
 
-        // 清理首尾多余的连字符/空格
         cleaned = cleaned.replaceAll("^[-\\s]+|[-\\s]+$", "").trim();
         if (cleaned.isEmpty()) return null;
 
@@ -547,7 +572,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         return result;
     }
 
-    /** 提取路径中最后一段作为文件夹名 */
     private String extractFolderName(String path) {
         if (path == null || path.isEmpty()) return "根目录";
         String p = path.endsWith("/") ? path.substring(0, path.length() - 1) : path;
@@ -572,12 +596,10 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         if (task == null) return;
 
         if ("PAUSED".equals(task.getStatus())) {
-            // 暂停中：线程还活着，只改状态即可
             applyUpdate(taskId, t -> t.setStatus("RUNNING"));
             log.info("批量任务已恢复(PAUSED→RUNNING): taskId={}", taskId);
 
         } else if ("FAILED".equals(task.getStatus())) {
-            // 失败/取消后重跑：查询已完成的文件路径，重新提交线程并跳过它们
             Set<String> skipPaths = loadProcessedPaths(taskId);
             applyUpdate(taskId, t -> {
                 t.setStatus("PENDING");
@@ -600,27 +622,16 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
 
     // ─── 成人内容检测 ─────────────────────────────────────────────────────────
 
-    /** 通用成人内容关键词 */
     private static final Set<String> ADULT_KEYWORDS = new HashSet<>(Arrays.asList(
             "xxx", "porn", "hentai", "erotic",
             "无码", "有码", "中出", "巨乳", "内射", "无修正"
     ));
 
-    /**
-     * 日本 AV 片号格式：2-5 个大写字母 + 连字符 + 3-6 位数字
-     * 匹配出现在文件名开头、方括号后或空格后的独立片号，降低误判率
-     */
     private static final Pattern AV_CODE_PATTERN =
             Pattern.compile("(?i)(^|[\\[\\s])[a-z]{2,5}-\\d{3,6}($|[\\]\\s.])");
 
-    /** 判断文件名是否含有成人内容特征 */
     // ─── 预扫描：批量 AI ──────────────────────────────────────────────────────
 
-    /**
-     * 对正则无法提取标题的文件做批量 AI 预识别（最多 20 个/次请求），
-     * 结果存入 tmdbCache（AI 标题对应的 TMDB 结果）并返回 aiResultCache。
-     * 主循环里 safeProcessOneFile 优先查 aiResultCache，命中则跳过单次 AI 调用。
-     */
     private Map<String, ArchiveAnalyzeResult> preScanBatchAi(
             Long taskId,
             List<GdFileItem> mediaFiles,
@@ -628,7 +639,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
 
         Map<String, ArchiveAnalyzeResult> aiResultCache = new ConcurrentHashMap<>();
 
-        // 1. 快速正则扫描，找出"无标题"文件（肯定需要 AI）
         List<String> aiNeeded = new ArrayList<>();
         for (GdFileItem file : mediaFiles) {
             ArchiveAnalyzeResult analyzed = archiveService.analyzeFilename(file.getName());
@@ -640,10 +650,8 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         if (aiNeeded.isEmpty()) return aiResultCache;
         log.info("[{}] 预扫描：发现 {} 个无标题文件，将批量 AI 识别", taskId, aiNeeded.size());
 
-        // 2. 按 20 个一批调用 AI（一次请求处理多个文件）
         final int BATCH_SIZE = 20;
         for (int i = 0; i < aiNeeded.size(); i += BATCH_SIZE) {
-            // 检查任务是否已被取消
             ArchiveBatchTask snap = batchTaskMapper.selectById(taskId);
             if (snap == null || "FAILED".equals(snap.getStatus())) break;
 
@@ -658,7 +666,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                     }
                     aiResultCache.put(fname, aiResult);
 
-                    // 预热 TMDB 缓存，避免主循环中重复查询
                     String aiKey = aiResult.getTitle().toLowerCase().trim()
                             + "|" + (aiResult.getYear()      != null ? aiResult.getYear()      : "")
                             + "|" + (aiResult.getMediaType() != null ? aiResult.getMediaType() : "");
@@ -667,9 +674,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                                 aiResult.getTitle(), aiResult.getYear(), aiResult.getMediaType());
                         tmdbCache.put(aiKey, aiTmdb);
                         if (!aiTmdb.isEmpty()) {
-                            try { Thread.sleep(250); } catch (InterruptedException ie) {
-                                Thread.currentThread().interrupt(); break;
-                            }
+                            sleepQuietly(tmdbCallInterval);
                         }
                     }
                 }
@@ -692,7 +697,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         return AV_CODE_PATTERN.matcher(lower).find();
     }
 
-    /** 判断是否为媒体文件 */
     private boolean isMediaFile(String filename) {
         if (filename == null) return false;
         int dot = filename.lastIndexOf('.');
@@ -700,7 +704,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         return MEDIA_EXTENSIONS.contains(filename.substring(dot + 1).toLowerCase());
     }
 
-    /** 构建归档执行请求 */
     private ArchiveExecuteRequest buildRequest(Long taskId, String fullPath, String rcloneConfigName,
                                                ArchiveAnalyzeResult analyzed, ArchiveTmdbItem tmdb, String processMethod) {
         ArchiveExecuteRequest req = new ArchiveExecuteRequest();
@@ -708,10 +711,8 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         req.setOriginalPath(fullPath);
         req.setRcloneConfigName(rcloneConfigName);
 
-        // 新文件名
         String newFilename = analyzed.getSuggestedFilename();
         if (newFilename == null || newFilename.trim().isEmpty()) {
-            // 退化到原始文件名
             newFilename = fullPath.contains("/")
                     ? fullPath.substring(fullPath.lastIndexOf('/') + 1)
                     : fullPath;
@@ -721,7 +722,6 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         req.setCategory(tmdb.getSuggestedCategory());
         req.setDirName(tmdb.getSuggestedDirName());
 
-        // 季目录
         if ("tv".equals(analyzed.getMediaType())
                 && analyzed.getSeason() != null && !analyzed.getSeason().isEmpty()) {
             try {
@@ -735,5 +735,10 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         req.setProcessMethod(processMethod);
 
         return req;
+    }
+
+    private void sleepQuietly(long millis) {
+        if (millis <= 0) return;
+        try { Thread.sleep(millis); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
     }
 }

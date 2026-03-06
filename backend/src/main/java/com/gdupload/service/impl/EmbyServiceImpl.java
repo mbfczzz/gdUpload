@@ -10,10 +10,7 @@ import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.gdupload.common.BusinessException;
 import com.gdupload.config.EmbyProperties;
-import com.gdupload.dto.EmbyGenre;
-import com.gdupload.dto.EmbyItem;
-import com.gdupload.dto.EmbyLibrary;
-import com.gdupload.dto.PagedResult;
+import com.gdupload.dto.*;
 import com.gdupload.entity.EmbyConfig;
 import com.gdupload.entity.EmbyDownloadHistory;
 import com.gdupload.entity.FileInfo;
@@ -78,6 +75,9 @@ public class EmbyServiceImpl implements IEmbyService {
 
     @Autowired
     private RcloneUtil rcloneUtil;
+
+    @Autowired
+    private IArchiveService archiveService;
 
     @Value("${app.emby.download-dir:/data/emby}")
     private String defaultEmbyDownloadDir;
@@ -983,34 +983,49 @@ public class EmbyServiceImpl implements IEmbyService {
      * 下载单个剧集，并创建电视剧目录
      */
     private Map<String, Object> downloadEpisodeWithSeriesDir(EmbyItem episode) throws Exception {
-        log.info("下载单个剧集: {}", episode.getName());
+        log.info("下载单个剧集（平铺模式）: {}", episode.getName());
 
-        // 获取剧集的 SeriesId（父电视剧ID）
+        String baseDir = getEmbyDownloadDir();
+
+        // 获取电视剧信息以构建系列前缀
+        String seriesPrefix = null;
         String seriesId = episode.getSeriesId();
-        if (seriesId == null || seriesId.isEmpty()) {
-            log.warn("剧集没有 SeriesId，下载到根目录");
-            return downloadSingleItem(episode);
+        if (seriesId != null && !seriesId.isEmpty()) {
+            try {
+                EmbyItem series = getItemDetail(seriesId);
+                if (series != null) {
+                    String seriesName = series.getName() != null ? series.getName() : "unknown_series";
+                    if (series.getProductionYear() != null) seriesName += " (" + series.getProductionYear() + ")";
+                    String tmdbId = extractTmdbId(series);
+                    if (tmdbId != null) seriesName += " [tmdbid=" + tmdbId + "]";
+                    seriesPrefix = seriesName.replaceAll("[\\\\/:*?\"<>|]", "_");
+                    log.info("系列文件名前缀: {}", seriesPrefix);
+                }
+            } catch (Exception e) {
+                log.warn("获取电视剧信息失败，将使用集标题作为文件名: {}", e.getMessage());
+            }
         }
 
-        // 获取电视剧信息
-        EmbyItem series = null;
-        try {
-            series = getItemDetail(seriesId);
-        } catch (Exception e) {
-            log.warn("无法获取电视剧信息: {}, 下载到根目录", e.getMessage());
-            return downloadSingleItem(episode);
+        if (seriesPrefix == null) {
+            // 无法获取系列信息，降级为普通下载
+            return downloadSingleItem(episode, baseDir);
         }
 
-        if (series == null) {
-            log.warn("电视剧不存在，下载到根目录");
-            return downloadSingleItem(episode);
+        // 构建平铺文件名：系列前缀 + S01E04 + 集标题.ext
+        String ext = getMediaExtension(episode);
+        String episodePart;
+        if (episode.getParentIndexNumber() != null && episode.getIndexNumber() != null) {
+            String epTitle = episode.getName() != null ? " " + episode.getName() : "";
+            episodePart = String.format(" S%02dE%02d%s", episode.getParentIndexNumber(), episode.getIndexNumber(), epTitle);
+        } else if (episode.getIndexNumber() != null) {
+            episodePart = String.format(" E%02d", episode.getIndexNumber());
+        } else {
+            episodePart = episode.getName() != null ? " " + episode.getName() : "";
         }
+        String flatFilename = (seriesPrefix + episodePart).replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
+        log.info("平铺文件名: {}", flatFilename);
 
-        // 创建电视剧目录（使用统一的目录名生成逻辑）
-        String seriesDir = buildSeriesDirectory(series, getEmbyDownloadDir());
-
-        // 下载剧集到电视剧目录
-        return downloadSingleItem(episode, seriesDir);
+        return downloadSingleItem(episode, baseDir, flatFilename);
     }
 
     /**
@@ -2055,6 +2070,18 @@ public class EmbyServiceImpl implements IEmbyService {
             log.info("下载目录: {}", getUploadDir());
             log.info("========================================");
 
+            // ═══ 预创建目标目录，避免并发上传时GD创建重复目录 ═══
+            try {
+                GdAccount account = gdAccountService.getNextAvailableAccountInRotation(finalTaskId, 0L);
+                if (account != null) {
+                    rcloneUtil.makeDirectory(account.getRcloneConfigName(), gdTargetPath);
+                    log.info("目标目录预创建完成: {}", gdTargetPath);
+                }
+            } catch (Exception e) {
+                log.warn("预创建目录失败（不影响上传）: {}", e.getMessage());
+            }
+            // ═══════════════════════════════════════════════
+
             // 创建固定大小的线程池
             ExecutorService executor = Executors.newFixedThreadPool(concurrentDownloads);
 
@@ -2167,9 +2194,53 @@ public class EmbyServiceImpl implements IEmbyService {
                                             fileInfoService.updateFileStatus(currentFile.getId(), 1,
                                                 String.format("上传 %d/%d", ei + 1, episodes.size()));
 
-                                            String remoteFilePath = base + flatFilename;
+                                            // ═══ 上传前补充编码信息到文件名 ═══
+                                            String finalFilename = flatFilename;
+                                            String finalFilePath = filePath;
+                                            try {
+                                                log.info("[{}/{}] [{}/{}集] 开始 ffprobe 探测: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), flatFilename);
+                                                MediaInfoDto mediaInfo = archiveService.getMediaInfo(filePath, null);
+                                                log.info("[{}/{}] [{}/{}集] ffprobe 结果: {}, videoCodec={}, resolution={}, audioCodec={}",
+                                                    index + 1, itemIds.size(), ei + 1, episodes.size(),
+                                                    mediaInfo != null ? "成功" : "失败",
+                                                    mediaInfo != null ? mediaInfo.getVideoCodec() : null,
+                                                    mediaInfo != null ? mediaInfo.getResolution() : null,
+                                                    mediaInfo != null ? mediaInfo.getAudioCodec() : null);
+                                                if (mediaInfo != null && (mediaInfo.getVideoCodec() != null || mediaInfo.getResolution() != null)) {
+                                                    // 构建带编码信息的文件名
+                                                    StringBuilder newName = new StringBuilder();
+                                                    int extIdx = flatFilename.lastIndexOf('.');
+                                                    String nameWithoutExt = extIdx > 0 ? flatFilename.substring(0, extIdx) : flatFilename;
+                                                    String extension = extIdx > 0 ? flatFilename.substring(extIdx) : "";
+
+                                                    newName.append(nameWithoutExt);
+                                                    if (mediaInfo.getResolution() != null) newName.append(" ").append(mediaInfo.getResolution());
+
+                                                    java.util.List<String> codecs = new java.util.ArrayList<>();
+                                                    if (mediaInfo.getVideoCodec() != null) codecs.add(mediaInfo.getVideoCodec());
+                                                    if (mediaInfo.getAudioCodec() != null) codecs.add(mediaInfo.getAudioCodec());
+                                                    if (!codecs.isEmpty()) newName.append(".").append(String.join(".", codecs));
+
+                                                    newName.append(extension);
+                                                    String formattedName = newName.toString();
+
+                                                    if (!formattedName.equals(flatFilename)) {
+                                                        java.nio.file.Path oldPath = java.nio.file.Paths.get(filePath);
+                                                        java.nio.file.Path newPath = oldPath.getParent().resolve(formattedName);
+                                                        java.nio.file.Files.move(oldPath, newPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                                                        finalFilename = formattedName;
+                                                        finalFilePath = newPath.toString();
+                                                        log.info("[{}/{}] [{}/{}集] 文件已格式化: {} → {}", index + 1, itemIds.size(), ei + 1, episodes.size(), flatFilename, formattedName);
+                                                    }
+                                                }
+                                            } catch (Exception e) {
+                                                log.warn("[{}/{}] [{}/{}集] 格式化失败，使用原文件名: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), e.getMessage());
+                                            }
+                                            // ═══════════════════════════════════
+
+                                            String remoteFilePath = base + finalFilename;
                                             RcloneResult uploadResult = rcloneUtil.uploadSingleFileTo(
-                                                filePath, account.getRcloneConfigName(), remoteFilePath,
+                                                finalFilePath, account.getRcloneConfigName(), remoteFilePath,
                                                 line -> log.debug("rclone: {}", line));
                                             if (uploadResult.isSuccess()) {
                                                 epSuccess++;
