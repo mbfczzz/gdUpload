@@ -61,6 +61,18 @@ public class ArchiveController {
     }
 
     /**
+     * 通过 TMDB ID 直接查详情（文件名中已含 tmdbid 时使用，免去搜索步骤）
+     */
+    @GetMapping("/tmdb-detail")
+    public Result<ArchiveTmdbItem> fetchTmdbDetail(@RequestParam Integer tmdbId) {
+        if (tmdbId == null || tmdbId <= 0) {
+            return Result.error("tmdbId 无效");
+        }
+        ArchiveTmdbItem item = archiveService.fetchTmdbDetail(tmdbId);
+        return item != null ? Result.success(item) : Result.error("TMDB ID " + tmdbId + " 未找到");
+    }
+
+    /**
      * 执行归档（重命名 + 移动 + 记录历史）
      */
     @PostMapping("/execute")

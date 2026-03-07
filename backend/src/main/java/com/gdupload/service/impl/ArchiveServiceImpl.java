@@ -74,15 +74,22 @@ public class ArchiveServiceImpl implements IArchiveService {
     private static final String TMDB_SEASON_URL =
             "https://api.themoviedb.org/3/tv/%d/season/%d?api_key=%s&language=%s";
 
+    private static final String TMDB_MOVIE_DETAIL_URL =
+            "https://api.themoviedb.org/3/movie/%d?api_key=%s&language=%s";
+
     // ─── 正则模式 ─────────────────────────────────────────────────────────────
 
     /** S01E01 / S01E001 */
     private static final Pattern SE_PATTERN =
             Pattern.compile("S(\\d{1,2})E(\\d{1,4})", Pattern.CASE_INSENSITIVE);
 
-    /** 文件名中内嵌的 TMDB ID 标签，如 [tmdbid=90792] */
+    /**
+     * 文件名中内嵌的 TMDB ID 标签，支持多种格式：
+     * [tmdbid=90792]  [tmdbid-90792]  {tmdbid=90792}  {tmdbid-90792}
+     * tmdbid90792  tmdbid=90792  tmdbid-90792（无括号）
+     */
     private static final Pattern FILENAME_TMDB_PATTERN =
-            Pattern.compile("(?i)\\[tmdbid=(\\d+)\\]");
+            Pattern.compile("(?i)[\\[{]?tmdbid[=\\-]?(\\d+)[\\]}]?");
 
     /** 中文 第01集/第1话 */
     private static final Pattern CN_EP_PATTERN =
@@ -401,13 +408,14 @@ public class ArchiveServiceImpl implements IArchiveService {
             String aiJson = "openai".equals(provider)
                     ? callOpenAiApi(key, model, apiUrl, prompt)
                     : callClaudeApi(key, model, prompt);
+            log.info("AI解析文件名 [{}] 原始返回: {}", provider, aiJson);
             ArchiveAnalyzeResult result = parseAiJson(filename, aiJson);
             result.setAnalyzeSource("ai");
             result.setSuggestedFilename(buildFilename(result));
             log.info("AI解析文件名成功: {} -> title={}", filename, result.getTitle());
             return result;
         } catch (Exception e) {
-            log.error("AI解析文件名失败，回退到正则解析: {}", e.getMessage());
+            log.error("AI解析文件名失败，回退到正则解析: {}", e.getMessage(), e);
             ArchiveAnalyzeResult fallback = analyzeFilename(filename);
             fallback.setAnalyzeSource("regex");
             return fallback;
@@ -449,9 +457,10 @@ public class ArchiveServiceImpl implements IArchiveService {
             String aiJson = "openai".equals(provider)
                     ? callOpenAiApiBatch(key, model, apiUrl, prompt)
                     : callClaudeApiBatch(key, model, prompt);
+            log.info("批量AI解析 [{}] 原始返回: {}", provider, aiJson);
             return parseBatchAiJson(filenames, aiJson);
         } catch (Exception e) {
-            log.error("批量AI解析失败，降级为逐个正则解析: {}", e.getMessage());
+            log.error("批量AI解析失败，降级为逐个正则解析: {}", e.getMessage(), e);
             return filenames.stream().map(f -> {
                 ArchiveAnalyzeResult r = analyzeFilename(f);
                 r.setAnalyzeSource("regex");
@@ -468,7 +477,7 @@ public class ArchiveServiceImpl implements IArchiveService {
         }
         sb.append("\n请以JSON数组格式返回，每个元素按顺序对应一个文件：\n");
         sb.append("[\n  {\n");
-        sb.append("    \"title\": \"作品中文名称\",\n");
+        sb.append("    \"title\": \"作品名称（用于TMDB搜索）\",\n");
         sb.append("    \"season\": \"季数（如01），电影则null\",\n");
         sb.append("    \"episode\": \"集数（如01），电影则null\",\n");
         sb.append("    \"resolution\": \"分辨率（如1080p），无则null\",\n");
@@ -478,7 +487,13 @@ public class ArchiveServiceImpl implements IArchiveService {
         sb.append("    \"mediaType\": \"tv 或 movie\",\n");
         sb.append("    \"year\": \"年份四位数字，无则null\",\n");
         sb.append("    \"isAdult\": false\n");
-        sb.append("  }\n]\n");
+        sb.append("  }\n]\n\n");
+        sb.append("title字段要求（非常重要）：\n");
+        sb.append("- 必须返回最简洁的、可在TMDB上搜索到的作品名称\n");
+        sb.append("- 如果文件名包含中文名+拼音（如\"虎胆神鹰 Hu Dan Shen Ying\"），只保留中文名\"虎胆神鹰\"\n");
+        sb.append("- 如果文件名包含重复名称（如\"虎胆神鹰 -虎胆神鹰\"），去重只保留一个\n");
+        sb.append("- 去掉拼音、罗马音转写、多余的英文翻译，只保留核心作品名\n");
+        sb.append("- 中文作品优先返回中文名，外语作品返回最常见的中文译名或原始外文名\n\n");
         sb.append("只返回JSON数组，不要包含任何说明文字。");
         return sb.toString();
     }
@@ -494,6 +509,7 @@ public class ArchiveServiceImpl implements IArchiveService {
         messages.add(userMsg);
         body.set("messages", messages);
 
+        log.info("调用Claude批量接口, model: {}", model);
         String response = HttpRequest.post("https://api.anthropic.com/v1/messages")
                 .header("x-api-key", apiKey)
                 .header("anthropic-version", "2023-06-01")
@@ -503,12 +519,22 @@ public class ArchiveServiceImpl implements IArchiveService {
                 .execute()
                 .body();
 
-        JSONObject resp = JSONUtil.parseObj(response);
+        log.debug("Claude批量API原始响应: {}", response);
+        JSONObject resp;
+        try {
+            resp = JSONUtil.parseObj(response);
+        } catch (Exception e) {
+            log.error("Claude批量API响应JSON解析失败，原始响应: {}", response);
+            throw new RuntimeException("Claude批量API响应解析失败: " + e.getMessage() + ", 原始响应: " + response);
+        }
+        if (resp.containsKey("error")) {
+            throw new RuntimeException("Claude批量API错误: " + resp.toString());
+        }
         JSONArray content = resp.getJSONArray("content");
         if (content != null && !content.isEmpty()) {
             return content.getJSONObject(0).getStr("text");
         }
-        throw new RuntimeException("Claude批量API返回内容为空");
+        throw new RuntimeException("Claude批量API返回内容为空，完整响应: " + response);
     }
 
     private String callOpenAiApiBatch(String apiKey, String model, String baseUrl, String prompt) {
@@ -523,6 +549,7 @@ public class ArchiveServiceImpl implements IArchiveService {
         body.set("messages", messages);
 
         String endpoint = (baseUrl != null ? baseUrl : "https://api.openai.com") + "/v1/chat/completions";
+        log.info("调用OpenAI批量接口: {}, model: {}", endpoint, model);
         String response = HttpRequest.post(endpoint)
                 .header("Authorization", "Bearer " + apiKey)
                 .header("content-type", "application/json")
@@ -531,7 +558,14 @@ public class ArchiveServiceImpl implements IArchiveService {
                 .execute()
                 .body();
 
-        JSONObject resp = JSONUtil.parseObj(response);
+        log.debug("OpenAI批量API原始响应: {}", response);
+        JSONObject resp;
+        try {
+            resp = JSONUtil.parseObj(response);
+        } catch (Exception e) {
+            log.error("OpenAI批量API响应JSON解析失败，原始响应: ", response);
+            throw new RuntimeException("OpenAI批量API响应解析失败: " + e.getMessage() + ", 原始响应: " + response);
+        }
         if (resp.containsKey("error")) {
             throw new RuntimeException("OpenAI批量API错误: " + resp.getJSONObject("error").getStr("message"));
         }
@@ -539,7 +573,7 @@ public class ArchiveServiceImpl implements IArchiveService {
         if (choices != null && !choices.isEmpty()) {
             return choices.getJSONObject(0).getJSONObject("message").getStr("content");
         }
-        throw new RuntimeException("OpenAI批量API返回内容为空");
+        throw new RuntimeException("OpenAI批量API返回内容为空，完整响应: " + response);
     }
 
     private List<ArchiveAnalyzeResult> parseBatchAiJson(List<String> filenames, String aiJson) {
@@ -593,7 +627,7 @@ public class ArchiveServiceImpl implements IArchiveService {
                 "文件名：" + filename + "\n\n" +
                 "请以JSON格式返回以下字段（无法确定的字段返回null）：\n" +
                 "{\n" +
-                "  \"title\": \"作品中文名称\",\n" +
+                "  \"title\": \"作品名称（用于TMDB搜索）\",\n" +
                 "  \"season\": \"季数数字字符串（如01），电影则null\",\n" +
                 "  \"episode\": \"集数数字字符串（如1109），电影则null\",\n" +
                 "  \"resolution\": \"分辨率（如1080p, 4K, 720p），无则null\",\n" +
@@ -604,6 +638,12 @@ public class ArchiveServiceImpl implements IArchiveService {
                 "  \"year\": \"年份四位数字字符串，无则null\",\n" +
                 "  \"isAdult\": \"是否为成人/色情内容，true 或 false（根据番号格式、关键词等判断）\"\n" +
                 "}\n\n" +
+                "title字段要求（非常重要）：\n" +
+                "- 必须返回最简洁的、可在TMDB上搜索到的作品名称\n" +
+                "- 如果文件名包含中文名+拼音（如\"虎胆神鹰 Hu Dan Shen Ying\"），只保留中文名\"虎胆神鹰\"\n" +
+                "- 如果文件名包含重复名称（如\"虎胆神鹰 -虎胆神鹰\"），去重只保留一个\n" +
+                "- 去掉拼音、罗马音转写、多余的英文翻译，只保留核心作品名\n" +
+                "- 中文作品优先返回中文名，外语作品返回最常见的中文译名或原始外文名\n\n" +
                 "只返回JSON对象，不要包含任何其他内容或说明。";
     }
 
@@ -618,6 +658,7 @@ public class ArchiveServiceImpl implements IArchiveService {
         messages.add(userMsg);
         body.set("messages", messages);
 
+        log.info("调用Claude接口, model: {}", model);
         String response = HttpRequest.post("https://api.anthropic.com/v1/messages")
                 .header("x-api-key", apiKey)
                 .header("anthropic-version", "2023-06-01")
@@ -627,12 +668,22 @@ public class ArchiveServiceImpl implements IArchiveService {
                 .execute()
                 .body();
 
-        JSONObject resp = JSONUtil.parseObj(response);
+        log.debug("Claude API原始响应: {}", response);
+        JSONObject resp;
+        try {
+            resp = JSONUtil.parseObj(response);
+        } catch (Exception e) {
+            log.error("Claude API响应JSON解析失败，原始响应: {}", response);
+            throw new RuntimeException("Claude API响应解析失败: " + e.getMessage() + ", 原始响应: " + response);
+        }
+        if (resp.containsKey("error")) {
+            throw new RuntimeException("Claude API错误: " + resp.toString());
+        }
         JSONArray content = resp.getJSONArray("content");
         if (content != null && !content.isEmpty()) {
             return content.getJSONObject(0).getStr("text");
         }
-        throw new RuntimeException("Claude API返回内容为空");
+        throw new RuntimeException("Claude API返回内容为空，完整响应: " + response);
     }
 
     private String callOpenAiApi(String apiKey, String model, String baseUrl, String prompt) {
@@ -656,9 +707,14 @@ public class ArchiveServiceImpl implements IArchiveService {
                 .execute()
                 .body();
 
-        log.info("OpenAI API原始响应: {}", response);
-        JSONObject resp = JSONUtil.parseObj(response);
-        // 优先检查错误
+        log.debug("OpenAI API原始响应: {}", response);
+        JSONObject resp;
+        try {
+            resp = JSONUtil.parseObj(response);
+        } catch (Exception e) {
+            log.error("OpenAI API响应JSON解析失败，原始响应: {}", response);
+            throw new RuntimeException("OpenAI API响应解析失败: " + e.getMessage() + ", 原始响应: " + response);
+        }
         if (resp.containsKey("error")) {
             throw new RuntimeException("OpenAI API错误: " + resp.getJSONObject("error").getStr("message"));
         }
@@ -844,6 +900,7 @@ public class ArchiveServiceImpl implements IArchiveService {
         history.setSeasonDir(req.getSeasonDir());
         history.setProcessMethod(req.getProcessMethod() != null ? req.getProcessMethod() : "manual");
         history.setBatchTaskId(req.getBatchTaskId());
+        history.setRcloneConfigName(req.getRcloneConfigName());
 
         try {
             // 构建目标目录
@@ -943,6 +1000,87 @@ public class ArchiveServiceImpl implements IArchiveService {
         result.put("historyId", history.getId());
         result.put("message", "已标记为需要人工处理");
         return result;
+    }
+
+    // ─── 通过 TMDB ID 直接查详情 ──────────────────────────────────────────────
+
+    @Override
+    public ArchiveTmdbItem fetchTmdbDetail(int tmdbId) {
+        String apiKey = getEffectiveTmdbApiKey();
+        String language = getTmdbLanguage();
+        if (apiKey == null || apiKey.isEmpty()) return null;
+
+        // 先尝试 TV
+        try {
+            String url = String.format(TMDB_TV_URL, tmdbId, apiKey, language);
+            String body = HttpRequest.get(url).timeout(15000).execute().body();
+            JSONObject obj = JSONUtil.parseObj(body);
+            if (obj.getInt("status_code") == null && obj.getStr("name") != null) {
+                return buildTmdbItemFromDetail(obj, "tv");
+            }
+        } catch (Exception e) {
+            log.debug("TMDB TV 详情查询失败: tmdbId={}, err={}", tmdbId, e.getMessage());
+        }
+
+        // 再尝试 Movie
+        try {
+            String url = String.format(TMDB_MOVIE_DETAIL_URL, tmdbId, apiKey, language);
+            String body = HttpRequest.get(url).timeout(15000).execute().body();
+            JSONObject obj = JSONUtil.parseObj(body);
+            if (obj.getInt("status_code") == null && (obj.getStr("title") != null || obj.getStr("original_title") != null)) {
+                return buildTmdbItemFromDetail(obj, "movie");
+            }
+        } catch (Exception e) {
+            log.debug("TMDB Movie 详情查询失败: tmdbId={}, err={}", tmdbId, e.getMessage());
+        }
+
+        log.warn("TMDB ID {} 无法匹配任何 TV/Movie", tmdbId);
+        return null;
+    }
+
+    /** 从 TMDB detail API 响应构建 ArchiveTmdbItem（字段名与 search API 略有不同） */
+    private ArchiveTmdbItem buildTmdbItemFromDetail(JSONObject r, String type) {
+        ArchiveTmdbItem item = new ArchiveTmdbItem();
+        item.setTmdbId(r.getInt("id"));
+        item.setType(type);
+
+        String title = "movie".equals(type) ? r.getStr("title") : r.getStr("name");
+        String originalTitle = "movie".equals(type) ? r.getStr("original_title") : r.getStr("original_name");
+        item.setTitle(title);
+        item.setOriginalTitle(originalTitle);
+        item.setOriginalLanguage(r.getStr("original_language"));
+        item.setOverview(r.getStr("overview"));
+        item.setPosterPath(r.getStr("poster_path"));
+
+        // 提取年份
+        String dateStr = "movie".equals(type) ? r.getStr("release_date") : r.getStr("first_air_date");
+        if (dateStr != null && dateStr.length() >= 4) {
+            item.setYear(dateStr.substring(0, 4));
+        }
+
+        // 类型ID（detail API 返回的是 genres 对象数组，不是 genre_ids）
+        JSONArray genres = r.getJSONArray("genres");
+        if (genres != null) {
+            List<Integer> genreIds = new ArrayList<>();
+            for (int i = 0; i < genres.size(); i++) {
+                Integer gid = genres.getJSONObject(i).getInt("id");
+                if (gid != null) genreIds.add(gid);
+            }
+            item.setGenreIds(genreIds);
+        }
+
+        item.setIsAdult(Boolean.TRUE.equals(r.getBool("adult")));
+        item.setSuggestedCategory(suggestCategory(type, item.getOriginalLanguage(), item.getGenreIds()));
+
+        // 建议目录名
+        String dirTitle = title != null ? title : originalTitle;
+        String dirName = dirTitle != null ? dirTitle : "未知";
+        if (item.getYear() != null) dirName += "-" + item.getYear();
+        if (item.getTmdbId() != null) dirName += "-[tmdbid=" + item.getTmdbId() + "]";
+        item.setSuggestedDirName(dirName);
+
+        log.info("TMDB ID {} 直接命中: type={}, title={}", item.getTmdbId(), type, title);
+        return item;
     }
 
     // ─── 分类列表 ─────────────────────────────────────────────────────────────

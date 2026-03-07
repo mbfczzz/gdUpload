@@ -572,7 +572,8 @@ function onArchived() {
 function retryArchive(row) {
   currentFile.value = {
     fileName: row.originalFilename,
-    filePath: row.originalPath || ''
+    filePath: row.originalPath || '',
+    rcloneConfigName: row.rcloneConfigName || ''
   }
   dialogVisible.value = true
 }

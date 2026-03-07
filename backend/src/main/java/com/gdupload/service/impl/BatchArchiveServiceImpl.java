@@ -348,6 +348,30 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             ArchiveAnalyzeResult analyzed = archiveService.analyzeFilename(filename);
             String processMethod = "tmdb";
 
+            // 1.5. 文件名中已含 tmdbId → 直接查 TMDB 详情，跳过搜索和 AI
+            if (analyzed.getTmdbId() != null && analyzed.getTmdbId() > 0) {
+                int embeddedTmdbId = analyzed.getTmdbId();
+                String tmdbIdKey = "tmdbid:" + embeddedTmdbId;
+                boolean cacheHit = tmdbCache.containsKey(tmdbIdKey);
+                List<ArchiveTmdbItem> directResults = tmdbCache.computeIfAbsent(tmdbIdKey, k -> {
+                    ArchiveTmdbItem detail = archiveService.fetchTmdbDetail(embeddedTmdbId);
+                    return detail != null ? Collections.singletonList(detail) : Collections.emptyList();
+                });
+                if (!cacheHit && !directResults.isEmpty()) {
+                    sleepQuietly(tmdbCallInterval);
+                }
+                if (!directResults.isEmpty()) {
+                    ArchiveTmdbItem tmdb = directResults.get(0);
+                    ArchiveExecuteRequest req = buildRequest(taskId, fullPath, rcloneConfigName, analyzed, tmdb, "tmdb_id");
+                    Map<String, Object> res = archiveService.executeArchive(req);
+                    boolean success = Boolean.TRUE.equals(res.get("success"));
+                    log.info("[{}] tmdbId直接命中归档{}: {} → {}", taskId, success ? "成功" : "失败",
+                            filename, res.get("targetPath"));
+                    return success ? 0 : 1;
+                }
+                log.warn("[{}] 文件名含 tmdbId={} 但查询无结果，继续常规流程: {}", taskId, embeddedTmdbId, filename);
+            }
+
             // 2. 搜索 TMDB（带缓存）
             List<ArchiveTmdbItem> tmdbResults = Collections.emptyList();
             if (analyzed.getTitle() != null && !analyzed.getTitle().isEmpty()) {
@@ -365,7 +389,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 }
             }
 
-            // 3. TMDB 无结果 → AI 兜底
+            // 3. TMDB 无结果 → AI 兜底（AI prompt 已优化，会返回干净的可搜索作品名）
             if (tmdbResults.isEmpty()) {
                 try {
                     ArchiveAnalyzeResult aiResult = aiResultCache.get(filename);
@@ -650,7 +674,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         if (aiNeeded.isEmpty()) return aiResultCache;
         log.info("[{}] 预扫描：发现 {} 个无标题文件，将批量 AI 识别", taskId, aiNeeded.size());
 
-        final int BATCH_SIZE = 20;
+        final int BATCH_SIZE = 50;
         for (int i = 0; i < aiNeeded.size(); i += BATCH_SIZE) {
             ArchiveBatchTask snap = batchTaskMapper.selectById(taskId);
             if (snap == null || "FAILED".equals(snap.getStatus())) break;

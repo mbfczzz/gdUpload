@@ -26,7 +26,8 @@
       "WebFetch(domain:github.com)",
       "Bash(gh repo view:*)",
       "Bash(wc:*)",
-      "Bash(./mvnw compile:*)"
+      "Bash(./mvnw compile:*)",
+      "Bash(where mvn:*)"
     ]
   }
 }

@@ -54,6 +54,9 @@ public class ArchiveHistory {
     /** 所属批量任务ID（单文件归档时为空） */
     private Long batchTaskId;
 
+    /** rclone配置名（云端文件归档时记录，本地文件为空） */
+    private String rcloneConfigName;
+
     @TableLogic
     private Integer deleted;
 

@@ -19,6 +19,11 @@ export function searchTmdb(title, year, type = 'tv') {
   return request.get('/archive/tmdb-search', { params: { title, year, type } })
 }
 
+/** 通过 TMDB ID 直接查详情（文件名已含 tmdbid 时使用） */
+export function fetchTmdbDetail(tmdbId) {
+  return request.get('/archive/tmdb-detail', { params: { tmdbId } })
+}
+
 /** 执行归档 */
 export function executeArchive(data) {
   return request.post('/archive/execute', data)

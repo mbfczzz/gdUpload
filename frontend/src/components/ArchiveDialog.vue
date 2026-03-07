@@ -352,6 +352,7 @@ import {
   analyzeFilename,
   aiAnalyzeFilename,
   searchTmdb,
+  fetchTmdbDetail,
   executeArchive,
   markManual,
   getMediaInfo
@@ -541,12 +542,33 @@ async function initDialog() {
     autoFillTechByAi()
   }
 
-  // 2. 自动发起 TMDB 搜索
+  // 2. 文件名已含 tmdbId → 直接查详情，跳过搜索
+  if (parseInfo.tmdbId) {
+    try {
+      const { data } = await fetchTmdbDetail(parseInfo.tmdbId)
+      if (data) {
+        tmdbResults.value = [data]
+        tmdbSearched.value = true
+        selectTmdb(data)
+        ElMessage.success(`tmdbId=${parseInfo.tmdbId} 直接命中：${data.title}`)
+        return  // 已匹配，无需搜索
+      }
+    } catch (e) {
+      console.warn('tmdbId 直接查询失败，降级搜索:', e)
+    }
+  }
+
+  // 3. 自动发起 TMDB 搜索
   if (parseInfo.title) {
     tmdbSearchTitle.value = parseInfo.title
     tmdbSearchYear.value  = parseInfo.year || ''
     tmdbSearchType.value  = parseInfo.mediaType === 'movie' ? 'movie' : 'tv'
     await doTmdbSearch()
+
+    // 3b. TMDB 搜不到 → 自动尝试 AI 识别后重搜
+    if (tmdbResults.value.length === 0 && archiveAiEnabled.value) {
+      await tryAiThenTmdb()
+    }
   }
 }
 

@@ -63,6 +63,13 @@ public interface IArchiveService {
     Map<String, String> fetchTvEpisodeInfo(int tmdbId, int season, int episode);
 
     /**
+     * 通过 TMDB ID 直接查询详情（先尝试TV，再尝试Movie）。
+     * 文件名中已嵌入 tmdbid 时使用，免去搜索步骤。
+     * 返回 ArchiveTmdbItem；未找到返回 null。
+     */
+    ArchiveTmdbItem fetchTmdbDetail(int tmdbId);
+
+    /**
      * 获取所有可用分类列表
      */
     List<String> getCategories();

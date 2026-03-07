@@ -183,8 +183,8 @@ app:
   archive:
     target-path: /video2  # 归档目标根目录
     batch-threads: 24              # 批量归档并行线程数（I/O密集型，可远超CPU核数）
-    ai-concurrency: 3              # AI 并发调用数（避免触发限流，按提供商酌情调高）
-    ai-call-interval: 1000         # AI 调用最小间隔(ms)，降低被限流风险
+    ai-concurrency: 1              # AI 并发调用数（第三方代理限流严格，降为1）
+    ai-call-interval: 3000         # AI 调用最小间隔(ms)，增加到3秒避免Cloudflare限流
     tmdb-call-interval: 100        # TMDB API 调用间隔(ms)，TMDB 限流宽松可调低
     db-flush-interval: 5           # 进度刷DB间隔（每处理N个文件刷一次，减少锁争用）
 
