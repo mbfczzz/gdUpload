@@ -145,16 +145,16 @@ public class UploadTaskServiceImpl extends ServiceImpl<UploadTaskMapper, UploadT
     @Transactional(rollbackFor = Exception.class)
     public boolean pauseTask(Long taskId) {
         UploadTask task = this.getById(taskId);
-        if (task == null || task.getStatus() != 1) {
+        if (task == null || (task.getStatus() != 1 && task.getStatus() != 6)) {
             return false;
         }
 
-        task.setStatus(3); // 已暂停
+        task.setStatus(6); // 暂停中（等待工作线程结束后自动变为3-已暂停）
 
         boolean updated = this.updateById(task);
 
         if (updated) {
-            log.info("暂停任务成功: taskId={}", taskId);
+            log.info("暂停任务（暂停中）: taskId={}", taskId);
 
             // 记录任务暂停日志
             systemLogService.logTaskOperation(taskId, task.getTaskName(), "TASK_PAUSE",
@@ -165,11 +165,33 @@ public class UploadTaskServiceImpl extends ServiceImpl<UploadTaskMapper, UploadT
         return updated;
     }
 
+    /**
+     * 暂停完成：工作线程全部结束后，将状态从6(暂停中)改为3(已暂停)
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean completePause(Long taskId) {
+        UploadTask task = this.getById(taskId);
+        if (task == null) return false;
+        // 仅当状态为6(暂停中)时才改为3(已暂停)
+        if (task.getStatus() != 6) {
+            log.warn("completePause: 任务状态非暂停中，跳过: taskId={}, status={}", taskId, task.getStatus());
+            return false;
+        }
+        task.setStatus(3); // 已暂停
+        boolean updated = this.updateById(task);
+        if (updated) {
+            log.info("暂停完成: taskId={}", taskId);
+        }
+        return updated;
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public boolean resumeTask(Long taskId) {
         UploadTask task = this.getById(taskId);
         if (task == null || task.getStatus() != 3) {
+            // 仅允许在已暂停(3)状态恢复；暂停中(6)时工作线程尚未完全退出，恢复会导致竞态条件
             return false;
         }
 

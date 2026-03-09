@@ -100,6 +100,12 @@ const routes = [
     name: 'StrmManager',
     component: () => import('@/views/StrmManager.vue'),
     meta: { title: 'STRM监控' }
+  },
+  {
+    path: '/emby-library',
+    name: 'EmbyLibraryInspect',
+    component: () => import('@/views/EmbyLibraryInspect.vue'),
+    meta: { title: 'Emby库检查' }
   }
 ]
 

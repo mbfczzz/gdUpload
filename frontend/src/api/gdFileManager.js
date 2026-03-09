@@ -74,6 +74,22 @@ export function cancelBatchFormat(taskId) {
   })
 }
 
+// 暂停批量格式化命名任务
+export function pauseBatchFormat(taskId) {
+  return request({
+    url: `/gd-file/batch-format/${taskId}/pause`,
+    method: 'put'
+  })
+}
+
+// 恢复批量格式化命名任务
+export function resumeBatchFormat(taskId) {
+  return request({
+    url: `/gd-file/batch-format/${taskId}/resume`,
+    method: 'put'
+  })
+}
+
 // 删除单个空目录（递归检查子目录也为空才删除）
 export function deleteEmptyDir(accountId, dirPath) {
   return request({

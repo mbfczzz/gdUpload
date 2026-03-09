@@ -35,6 +35,11 @@ public interface IUploadTaskService extends IService<UploadTask> {
     boolean pauseTask(Long taskId);
 
     /**
+     * 暂停完成（工作线程全部结束后，将状态从6-暂停中改为3-已暂停）
+     */
+    boolean completePause(Long taskId);
+
+    /**
      * 恢复任务
      */
     boolean resumeTask(Long taskId);

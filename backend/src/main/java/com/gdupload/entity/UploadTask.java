@@ -75,7 +75,7 @@ public class UploadTask implements Serializable {
     private Integer progress;
 
     /**
-     * 状态: 0-待开始 1-上传中 2-已完成 3-已暂停 4-已取消 5-失败
+     * 状态: 0-待开始 1-上传中 2-已完成 3-已暂停 4-已取消 5-失败 6-暂停中
      */
     private Integer status;
 

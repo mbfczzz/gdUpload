@@ -69,8 +69,10 @@ public class SubscribeBatchExecutorServiceImpl implements ISubscribeBatchExecuto
 
             int totalCount = jsonArray.size();
             int completedCount = executedIds.size();
-            int successCount = 0;
-            int failedCount = 0;
+            // 续跑时从 DB 已有进度开始累加，避免覆盖之前的统计
+            SubscribeBatchTask dbSnap = taskMapper.selectById(task.getId());
+            int successCount = (dbSnap != null && completedCount > 0) ? dbSnap.getSuccessCount() : 0;
+            int failedCount  = (dbSnap != null && completedCount > 0) ? dbSnap.getFailedCount()  : 0;
 
             Random random = new Random();
 
@@ -102,7 +104,14 @@ public class SubscribeBatchExecutorServiceImpl implements ISubscribeBatchExecuto
                     delaySeconds = delayMs / 1000;
 
                     log.info("等待{}秒后执行下一个请求...", delaySeconds);
-                    Thread.sleep(delayMs);
+                    // 分段 sleep，每2秒检查一次是否需要停止，避免长时间卡在 PAUSING 状态
+                    int slept = 0;
+                    while (slept < delayMs) {
+                        if (STOP_FLAGS.contains(task.getId())) break;
+                        int chunk = Math.min(2000, delayMs - slept);
+                        Thread.sleep(chunk);
+                        slept += chunk;
+                    }
                 }
 
                 // 再次检查是否需要停止
@@ -186,6 +195,28 @@ public class SubscribeBatchExecutorServiceImpl implements ISubscribeBatchExecuto
     public void stopTask(Long taskId) {
         log.info("请求停止任务: taskId={}", taskId);
         STOP_FLAGS.add(taskId);
+    }
+
+    @Override
+    public void resumeTask(Long taskId) {
+        log.info("请求恢复任务: taskId={}", taskId);
+        SubscribeBatchTask task = taskMapper.selectById(taskId);
+        if (task == null) {
+            log.warn("任务不存在: taskId={}", taskId);
+            return;
+        }
+
+        if (!"PAUSED".equals(task.getStatus())) {
+            log.warn("任务不在暂停状态，无法恢复: taskId={}, status={}", taskId, task.getStatus());
+            return;
+        }
+
+        // 移除停止标志
+        STOP_FLAGS.remove(taskId);
+
+        // 重新提交执行（executeTask 内部会设置 RUNNING 并跳过已执行的订阅）
+        executeTask(task);
+        log.info("任务已恢复: taskId={}", taskId);
     }
 
     /**

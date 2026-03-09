@@ -175,6 +175,26 @@ public class ArchiveController {
         return Result.success("备注已更新");
     }
 
+    /**
+     * 批量给文件添加 TMDB ID 标记（重命名文件，追加 [tmdbid=xxx]）
+     * 请求体：{ "historyIds": [1,2,3], "tmdbId": 12345 }
+     */
+    @PostMapping("/batch-add-tmdb-tag")
+    public Result<Map<String, Object>> batchAddTmdbTag(@RequestBody Map<String, Object> body) {
+        @SuppressWarnings("unchecked")
+        List<Number> rawIds = (List<Number>) body.get("historyIds");
+        if (rawIds == null || rawIds.isEmpty()) {
+            return Result.error("historyIds 不能为空");
+        }
+        Number tmdbIdNum = (Number) body.get("tmdbId");
+        if (tmdbIdNum == null || tmdbIdNum.intValue() <= 0) {
+            return Result.error("tmdbId 无效");
+        }
+        List<Long> historyIds = new java.util.ArrayList<>();
+        for (Number n : rawIds) historyIds.add(n.longValue());
+        return Result.success(archiveService.batchAddTmdbTag(historyIds, tmdbIdNum.intValue()));
+    }
+
     // ─── 批量归档任务 ──────────────────────────────────────────────────────────
 
     /**

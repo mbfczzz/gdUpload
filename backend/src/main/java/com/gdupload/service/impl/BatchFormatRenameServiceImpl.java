@@ -96,6 +96,7 @@ public class BatchFormatRenameServiceImpl implements IBatchFormatRenameService {
         r.put("currentFile", s.currentFile);
         r.put("logs",        new ArrayList<>(s.logs));
         r.put("errorMessage",s.errorMessage);
+        r.put("paused",      s.paused);
         return r;
     }
 
@@ -103,6 +104,29 @@ public class BatchFormatRenameServiceImpl implements IBatchFormatRenameService {
     public void cancelTask(String taskId) {
         TaskStatus s = taskMap.get(taskId);
         if (s != null) s.cancelled = true;
+    }
+
+    @Override
+    public void pauseTask(String taskId) {
+        TaskStatus s = taskMap.get(taskId);
+        if (s != null && "RUNNING".equals(s.phase)) {
+            s.paused = true;
+            s.phase = "PAUSING";
+            s.addLog("暂停请求已发送，等待工作线程结束...");
+            log.info("[BatchFormatRename] 暂停任务: taskId={}", taskId);
+        }
+    }
+
+    @Override
+    public void resumeTask(String taskId) {
+        TaskStatus s = taskMap.get(taskId);
+        // 仅允许在 PAUSED 状态恢复，PAUSING 时工作线程可能还在运行
+        if (s != null && "PAUSED".equals(s.phase)) {
+            s.paused = false;
+            s.phase = "RUNNING";
+            s.addLog("任务已恢复");
+            log.info("[BatchFormatRename] 恢复任务: taskId={}", taskId);
+        }
     }
 
     // ─── 核心逻辑 ───────────────────────────────────────────────────────────────
@@ -160,6 +184,19 @@ public class BatchFormatRenameServiceImpl implements IBatchFormatRenameService {
             for (GdFileItem item : dirFiles) {
                 if (status.cancelled) break;
 
+                // 暂停检查：如果暂停了就等待恢复
+                while (status.paused && !status.cancelled) {
+                    if ("PAUSING".equals(status.phase) && !status.cancelled) {
+                        status.phase = "PAUSED";
+                        status.addLog("任务已暂停");
+                    }
+                    try { Thread.sleep(1000); } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+                if (status.cancelled) break;
+
                 // listJsonRecursive 返回的 Path 相对于 dirPath，拼接还原完整路径
                 final String fullPath = dirPath.isEmpty()
                         ? item.getPath()
@@ -167,6 +204,13 @@ public class BatchFormatRenameServiceImpl implements IBatchFormatRenameService {
                 final String fileName = item.getName();
 
                 filePool.submit(() -> {
+                    if (status.cancelled) return;
+                    // 暂停时等待恢复（不要直接 return，否则文件会被跳过不处理）
+                    while (status.paused && !status.cancelled) {
+                        try { Thread.sleep(1000); } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt(); return;
+                        }
+                    }
                     if (status.cancelled) return;
                     status.currentFile = fileName;
                     try {
@@ -337,6 +381,7 @@ public class BatchFormatRenameServiceImpl implements IBatchFormatRenameService {
         volatile String       currentFile  = "";
         volatile String       errorMessage = "";
         volatile boolean      cancelled    = false;
+        volatile boolean      paused       = false;
         final AtomicInteger   total        = new AtomicInteger();
         final AtomicInteger   processed    = new AtomicInteger();
         final AtomicInteger   renamed      = new AtomicInteger();

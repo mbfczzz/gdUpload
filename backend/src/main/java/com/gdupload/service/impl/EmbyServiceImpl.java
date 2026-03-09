@@ -20,6 +20,7 @@ import com.gdupload.service.*;
 import com.gdupload.util.DateTimeUtil;
 import com.gdupload.util.RcloneResult;
 import com.gdupload.util.RcloneUtil;
+import com.gdupload.util.TaskPauseManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -1684,6 +1685,10 @@ public class EmbyServiceImpl implements IEmbyService {
         // 6. 启动下载管理线程（5个并发下载）
         final Long finalTaskId = taskId;
         final int CONCURRENT_DOWNLOADS = 5;
+
+        // ── 注册到 TaskPauseManager ──
+        TaskPauseManager.register(finalTaskId, itemIds.size());
+
         new Thread(() -> {
             AtomicInteger successCount = new AtomicInteger(0);
             AtomicInteger failedCount = new AtomicInteger(0);
@@ -1702,9 +1707,10 @@ public class EmbyServiceImpl implements IEmbyService {
                     // 检查停止标志
                     if (stopFlag.get()) {
                         log.info("下载任务被停止: taskId={}", finalTaskId);
-                        // 剩余的直接countdown
+                        // 剩余的直接countdown + onThreadFinished（保持 activeThreads 计数一致）
                         for (int j = i; j < itemIds.size(); j++) {
                             latch.countDown();
+                            TaskPauseManager.onThreadFinished(finalTaskId);
                         }
                         break;
                     }
@@ -1790,6 +1796,7 @@ public class EmbyServiceImpl implements IEmbyService {
                             webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 3, e.getMessage());
                         } finally {
                             latch.countDown();
+                            TaskPauseManager.onThreadFinished(finalTaskId);
 
                             // 更新进度
                             batchDownloadProgress.put("successCount", successCount.get());
@@ -1851,7 +1858,7 @@ public class EmbyServiceImpl implements IEmbyService {
             } finally {
                 executor.shutdownNow();
                 downloadStopFlags.remove(finalTaskId);
-
+                TaskPauseManager.unregister(finalTaskId);
             }
         }, "Emby-BatchDownload-" + taskId).start();
 
@@ -1874,9 +1881,17 @@ public class EmbyServiceImpl implements IEmbyService {
         AtomicBoolean stopFlag = downloadStopFlags.get(taskId);
         if (stopFlag != null) {
             stopFlag.set(true);
-            uploadTaskService.updateTaskStatus(taskId, 3, null); // 已暂停
-            webSocketService.pushTaskStatus(taskId, 3, "下载已暂停");
-            log.info("暂停下载任务: taskId={}", taskId);
+            uploadTaskService.updateTaskStatus(taskId, 6, null); // 6=暂停中
+            webSocketService.pushTaskStatus(taskId, 6, "暂停中...");
+
+            // 通过 TaskPauseManager 等待所有线程结束后再变为已暂停
+            TaskPauseManager.requestPause(taskId, id -> {
+                uploadTaskService.completePause(id);
+                webSocketService.pushTaskStatus(id, 3, "下载已暂停");
+                log.info("下载任务暂停完成（所有线程已结束）: taskId={}", id);
+            });
+
+            log.info("暂停下载任务（暂停中）: taskId={}", taskId);
             return true;
         }
         // 任务不在运行中，直接更新数据库状态
@@ -1888,8 +1903,18 @@ public class EmbyServiceImpl implements IEmbyService {
         AtomicBoolean stopFlag = downloadStopFlags.get(taskId);
         if (stopFlag != null) {
             stopFlag.set(true);
+
+            // 先覆盖可能存在的暂停回调（必须在设置DB状态之前），
+            // 防止暂停回调在 requestCancel 和 updateTaskStatus 之间的窗口触发，
+            // 把状态从 4 改回 3
+            TaskPauseManager.requestCancel(taskId, id -> {
+                log.info("下载任务取消-所有线程已结束: taskId={}", id);
+            });
+
+            // 回调已被替换为 no-op，现在安全地设置最终取消状态
             uploadTaskService.updateTaskStatus(taskId, 4, "用户取消"); // 已取消
             webSocketService.pushTaskStatus(taskId, 4, "下载已取消");
+
             log.info("取消下载任务: taskId={}", taskId);
             return true;
         }
@@ -2053,6 +2078,10 @@ public class EmbyServiceImpl implements IEmbyService {
 
         // 5. 启动并发下载上传线程
         final Long finalTaskId = taskId;
+
+        // ── 注册到 TaskPauseManager ──
+        TaskPauseManager.register(finalTaskId, itemIds.size());
+
         new Thread(() -> {
             // 使用 AtomicInteger 保证线程安全
             AtomicInteger successCount = new AtomicInteger(0);
@@ -2096,16 +2125,16 @@ public class EmbyServiceImpl implements IEmbyService {
                     // 提交任务到线程池
                     executor.submit(() -> {
                         try {
-                            // 检查停止标志
-                            if (stopFlag.get()) {
-                                log.info("下载上传任务被停止: taskId={}", finalTaskId);
-                                latch.countDown();
-                                return;
-                            }
 
                             log.info("[{}/{}] 开始处理: {}", index + 1, itemIds.size(), currentFile.getFileName());
 
                             try {
+                                // 检查停止标志（放在内层try内，确保finally中的countDown和onThreadFinished一定会执行）
+                                if (stopFlag.get()) {
+                                    log.info("下载上传任务被停止: taskId={}", finalTaskId);
+                                    return;
+                                }
+
                                 EmbyItem item = getItemDetail(itemId);
                                 if (item == null) {
                                     throw new BusinessException("媒体项不存在: " + itemId);
@@ -2146,6 +2175,11 @@ public class EmbyServiceImpl implements IEmbyService {
                                     int epSuccess = 0;
 
                                     for (int ei = 0; ei < episodes.size(); ei++) {
+                                        // 暂停/取消检查：立即停止处理剩余剧集
+                                        if (stopFlag.get()) {
+                                            log.info("[{}/{}] 任务已停止，跳过剩余剧集", index + 1, itemIds.size());
+                                            break;
+                                        }
                                         EmbyItem episode = episodes.get(ei);
                                         log.info("[{}/{}] [{}/{}集] 下载: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), episode.getName());
 
@@ -2269,7 +2303,40 @@ public class EmbyServiceImpl implements IEmbyService {
                                     fileInfoService.updateFileStatus(currentFile.getId(), 1, "正在下载");
                                     webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, "正在下载");
 
-                                    Map<String, Object> downloadResult = downloadSingleItem(item, uploadDir);
+                                    // 如果是单集(Episode)，构建含tmdbid的文件名（与批量直接下载保持一致）
+                                    String filenameOverride = null;
+                                    if ("Episode".equals(item.getType())) {
+                                        String seriesId = item.getSeriesId();
+                                        if (seriesId != null && !seriesId.isEmpty()) {
+                                            try {
+                                                EmbyItem series = getItemDetail(seriesId);
+                                                if (series != null) {
+                                                    String sName = series.getName() != null ? series.getName() : "unknown_series";
+                                                    if (series.getProductionYear() != null) sName += " (" + series.getProductionYear() + ")";
+                                                    String tmdbId = extractTmdbId(series);
+                                                    if (tmdbId != null) sName += " [tmdbid=" + tmdbId + "]";
+                                                    String prefix = sName.replaceAll("[\\\\/:*?\"<>|]", "_");
+
+                                                    String ext = getMediaExtension(item);
+                                                    String episodePart;
+                                                    if (item.getParentIndexNumber() != null && item.getIndexNumber() != null) {
+                                                        String epTitle = item.getName() != null ? " " + item.getName() : "";
+                                                        episodePart = String.format(" S%02dE%02d%s", item.getParentIndexNumber(), item.getIndexNumber(), epTitle);
+                                                    } else if (item.getIndexNumber() != null) {
+                                                        episodePart = String.format(" E%02d", item.getIndexNumber());
+                                                    } else {
+                                                        episodePart = item.getName() != null ? " " + item.getName() : "";
+                                                    }
+                                                    filenameOverride = (prefix + episodePart).replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
+                                                    log.info("[{}/{}] Episode含tmdbid文件名: {}", index + 1, itemIds.size(), filenameOverride);
+                                                }
+                                            } catch (Exception e) {
+                                                log.warn("[{}/{}] 获取Episode父级Series信息失败，使用默认文件名: {}", index + 1, itemIds.size(), e.getMessage());
+                                            }
+                                        }
+                                    }
+
+                                    Map<String, Object> downloadResult = downloadSingleItem(item, uploadDir, filenameOverride);
                                     if (downloadResult == null || !Boolean.TRUE.equals(downloadResult.get("success"))) {
                                         throw new BusinessException("下载失败");
                                     }
@@ -2337,6 +2404,7 @@ public class EmbyServiceImpl implements IEmbyService {
                             } finally {
                                 // 完成一个任务
                                 latch.countDown();
+                                TaskPauseManager.onThreadFinished(finalTaskId);
 
                                 // 更新任务进度
                                 int completed = successCount.get() + failedCount.get();
@@ -2347,8 +2415,8 @@ public class EmbyServiceImpl implements IEmbyService {
                                     currentFile.getFileName());
                             }
                         } catch (Exception threadEx) {
+                            // 内层 finally 已保证 countDown + onThreadFinished，此处仅记录日志
                             log.error("线程执行异常", threadEx);
-                            latch.countDown();
                         }
                     });
                 }
@@ -2368,8 +2436,8 @@ public class EmbyServiceImpl implements IEmbyService {
                 int finalFailedCount = failedCount.get();
 
                 if (stopFlag.get()) {
-                    uploadTaskService.updateTaskStatus(finalTaskId, 3, null);
-                    webSocketService.pushTaskStatus(finalTaskId, 3, "已暂停");
+                    // 暂停中 → 由 TaskPauseManager 回调处理状态变更
+                    log.info("下载上传任务已停止，等待 TaskPauseManager 回调: taskId={}", finalTaskId);
                 } else if (finalFailedCount == 0) {
                     uploadTaskService.updateTaskStatus(finalTaskId, 2, null);
                     webSocketService.pushTaskStatus(finalTaskId, 2, "完成");
@@ -2393,10 +2461,11 @@ public class EmbyServiceImpl implements IEmbyService {
                 uploadTaskService.updateTaskStatus(finalTaskId, 3, e.getMessage());
                 webSocketService.pushTaskStatus(finalTaskId, 3, "任务异常");
             } finally {
+                executor.shutdownNow();
                 downloadStopFlags.remove(finalTaskId);
-
+                TaskPauseManager.unregister(finalTaskId);
             }
-        }, "Emby-DownloadUpload-" + taskId).start();
+        }, "Emby-BatchDU-" + taskId).start();
 
         log.info("批量下载上传任务已启动: taskId={}, 共 {} 个媒体项", taskId, itemIds.size());
         return taskId;

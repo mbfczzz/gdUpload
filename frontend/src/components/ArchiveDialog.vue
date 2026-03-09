@@ -50,8 +50,11 @@
             <el-icon><Edit /></el-icon> 文件信息
           </span>
           <div style="display:flex;align-items:center;gap:8px;">
+            <el-tag v-if="ffprobeLoading" type="info" size="small">
+              <el-icon class="rotating"><Loading /></el-icon> ffprobe检测中...
+            </el-tag>
             <el-tag v-if="techLoading" type="warning" size="small">
-              <el-icon class="rotating"><Loading /></el-icon> AI补充中...
+              <el-icon class="rotating"><Loading /></el-icon> AI解析中...
             </el-tag>
             <el-tag v-else-if="parseInfo.analyzeSource === 'ai'" type="warning" size="small">AI识别</el-tag>
             <el-tag v-else type="info" size="small">正则解析</el-tag>
@@ -162,14 +165,14 @@
             <el-input
               v-model="tmdbSearchTitle"
               size="small"
-              style="width: 200px"
+              style="width: 180px"
               placeholder="搜索词"
               @keyup.enter="doTmdbSearch"
             />
             <el-input
               v-model="tmdbSearchYear"
               size="small"
-              style="width: 80px; margin-left: 6px"
+              style="width: 70px; margin-left: 6px"
               placeholder="年份"
               maxlength="4"
             />
@@ -180,6 +183,18 @@
             <el-button size="small" type="primary" :loading="tmdbLoading"
                        @click="doTmdbSearch" style="margin-left: 6px">
               搜索
+            </el-button>
+            <el-divider direction="vertical" />
+            <el-input
+              v-model="tmdbIdSearch"
+              size="small"
+              style="width: 110px"
+              placeholder="TMDB ID"
+              @keyup.enter="doTmdbIdSearch"
+            />
+            <el-button size="small" type="success" :loading="tmdbLoading"
+                       @click="doTmdbIdSearch" style="margin-left: 6px">
+              ID查询
             </el-button>
           </div>
         </div>
@@ -395,9 +410,10 @@ const parseInfo = reactive({
 
 const archiveAiEnabled = ref(false)   // 归档AI解析开关，从配置加载
 
-const tmdbLoading   = ref(false)
-const aiAnalyzing   = ref(false)
-const techLoading   = ref(false)
+const tmdbLoading    = ref(false)
+const aiAnalyzing    = ref(false)
+const techLoading    = ref(false)   // AI 解析 loading
+const ffprobeLoading = ref(false)   // ffprobe 探测 loading
 const tmdbSearched  = ref(false)
 const tmdbResults   = ref([])
 const selectedTmdb  = ref(null)
@@ -405,6 +421,7 @@ const tmdbSearchTitle = ref('')
 const tmdbSearchYear  = ref('')
 const tmdbSearchType  = ref('tv')
 const manualTmdb    = reactive({ tmdbId: '', title: '', year: '' })
+const tmdbIdSearch  = ref('')    // TMDB ID 直接查询输入
 
 // ─── 归档配置 ─────────────────────────────────────────────────────────────────
 
@@ -516,6 +533,7 @@ async function initDialog() {
   })
   Object.assign(archiveConfig, { category: '', dirName: '', seasonDir: '' })
   Object.assign(manualTmdb, { tmdbId: '', title: '', year: '' })
+  tmdbIdSearch.value = ''
   isAdultDetected.value = false
   adultSource.value = ''
 
@@ -537,10 +555,7 @@ async function initDialog() {
   // 1b. ffprobe 探测真实媒体信息（优先于 AI，只对本地文件有效）
   await tryFfprobe()
 
-  // 1c. 技术字段仍全空时，且开启了归档AI解析，自动静默调 AI 补充
-  if (archiveAiEnabled.value && !parseInfo.resolution && !parseInfo.videoCodec && !parseInfo.audioCodec) {
-    autoFillTechByAi()
-  }
+  // 1c. 技术字段仍全空时不再自动调AI，用户可手动点击"AI解析"按钮
 
   // 2. 文件名已含 tmdbId → 直接查详情，跳过搜索
   if (parseInfo.tmdbId) {
@@ -565,17 +580,14 @@ async function initDialog() {
     tmdbSearchType.value  = parseInfo.mediaType === 'movie' ? 'movie' : 'tv'
     await doTmdbSearch()
 
-    // 3b. TMDB 搜不到 → 自动尝试 AI 识别后重搜
-    if (tmdbResults.value.length === 0 && archiveAiEnabled.value) {
-      await tryAiThenTmdb()
-    }
+    // 3b. TMDB 搜不到时不再自动调AI，用户可手动点击"尝试AI识别"按钮
   }
 }
 
 /** ffprobe 探测真实媒体信息（本地文件直接探测，云端文件走 rclone 管道） */
 async function tryFfprobe() {
   if (!props.file?.filePath) return
-  techLoading.value = true
+  ffprobeLoading.value = true
   try {
     const { data } = await getMediaInfo(props.file.filePath, props.file.rcloneConfigName || '')
     if (!data) {
@@ -590,7 +602,7 @@ async function tryFfprobe() {
   } catch (e) {
     console.warn('ffprobe 调用失败:', e)
   } finally {
-    techLoading.value = false
+    ffprobeLoading.value = false
   }
 }
 
@@ -679,6 +691,37 @@ async function doTmdbSearch() {
   }
 }
 
+/** 通过 TMDB ID 直接查询 */
+async function doTmdbIdSearch() {
+  const id = parseInt(tmdbIdSearch.value)
+  if (!id || id <= 0) {
+    ElMessage.warning('请输入有效的 TMDB ID')
+    return
+  }
+  tmdbLoading.value  = true
+  tmdbSearched.value = false
+  tmdbResults.value  = []
+  selectedTmdb.value = null
+
+  try {
+    const { data } = await fetchTmdbDetail(id)
+    if (data) {
+      tmdbResults.value  = [data]
+      tmdbSearched.value = true
+      selectTmdb(data)
+      ElMessage.success(`TMDB ID ${id} 命中：${data.title}`)
+    } else {
+      tmdbSearched.value = true
+      ElMessage.warning(`TMDB ID ${id} 未找到任何结果`)
+    }
+  } catch (e) {
+    tmdbSearched.value = true
+    ElMessage.error('TMDB ID 查询失败: ' + (e?.message || e))
+  } finally {
+    tmdbLoading.value = false
+  }
+}
+
 /** AI 识别 → 再次搜索 TMDB */
 async function tryAiThenTmdb() {
   aiAnalyzing.value = true
@@ -710,19 +753,25 @@ function selectTmdb(item) {
     adultSource.value = 'TMDB标记'
   }
 
-  // 自动填充归档配置
+  // ── 回填文件信息 ──
+  // 媒体类型：以 TMDB 返回为准
+  if (item.type) {
+    parseInfo.mediaType = item.type
+    tmdbSearchType.value = item.type === 'movie' ? 'movie' : 'tv'
+  }
+  // 年份
+  if (item.year) parseInfo.year = item.year
+
+  // ── 自动填充归档配置 ──
   archiveConfig.category = item.suggestedCategory || ''
   archiveConfig.dirName  = item.suggestedDirName  || ''
 
-  // 自动设置季目录
+  // 自动设置季目录（仅 TV 类型且有季数时）
   if (parseInfo.mediaType === 'tv' && parseInfo.season) {
     archiveConfig.seasonDir = `Season ${parseInfo.season.replace(/^0+/, '') || '1'}`
   } else {
     archiveConfig.seasonDir = ''
   }
-
-  // 同步年份到解析结果
-  if (!parseInfo.year && item.year) parseInfo.year = item.year
 }
 
 // ─── 字段联动 ─────────────────────────────────────────────────────────────────
@@ -782,7 +831,9 @@ async function handleExecute() {
       processMethod:     parseInfo.analyzeSource === 'ai'
                            ? 'ai'
                            : (tmdb ? 'tmdb' : 'manual'),
-      rcloneConfigName:  props.file.rcloneConfigName || ''
+      rcloneConfigName:  props.file.rcloneConfigName || '',
+      batchTaskId:       props.file.batchTaskId || null,
+      historyId:         props.file.historyId || null   // 关联原记录ID（重试时更新而非新增）
     }
 
     const { data } = await executeArchive(req)
@@ -876,6 +927,8 @@ function onClosed() {
 .tmdb-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
 }
 
 /* 文件名预览 */

@@ -21,8 +21,8 @@
           <template #default="{ row }">
             <div class="task-name-cell">
               <span class="task-name">{{ row.taskName }}</span>
-              <div v-if="row.status === 'RUNNING' && row.currentFile" class="current-file">
-                ▶ {{ row.currentFile }}
+              <div v-if="(row.status === 'RUNNING' || row.status === 'PAUSING') && row.currentFile" class="current-file">
+                {{ row.status === 'PAUSING' ? '⏳' : '▶' }} {{ row.currentFile }}
               </div>
               <div v-else-if="row.status === 'PAUSED'" class="current-file paused-hint">
                 ⏸ {{ row.currentFile ? '暂停于: ' + row.currentFile : '已暂停' }}
@@ -94,7 +94,7 @@
               @click="resumeBatchTaskFn(row)"
             >继续</el-button>
             <el-button
-              v-if="row.status === 'RUNNING' || row.status === 'PENDING' || row.status === 'PAUSED'"
+              v-if="row.status === 'RUNNING' || row.status === 'PENDING' || row.status === 'PAUSED' || row.status === 'PAUSING'"
               type="danger"
               link
               size="small"
@@ -318,8 +318,35 @@
           </el-button>
         </div>
 
+        <!-- 批量 TMDB 标记操作栏 -->
+        <div v-if="detailSelection.length > 0" class="batch-tmdb-bar">
+          <span class="batch-hint">已选 {{ detailSelection.length }} 个文件</span>
+          <el-input
+            v-model="batchTmdbId"
+            size="small"
+            style="width: 130px"
+            placeholder="TMDB ID"
+          />
+          <el-button
+            size="small"
+            type="success"
+            :loading="batchTagLoading"
+            :disabled="!batchTmdbId"
+            @click="handleBatchAddTmdbTag"
+          >
+            批量添加标记
+          </el-button>
+        </div>
+
         <!-- 文件列表 -->
-        <el-table v-loading="detailLoading" :data="detailList" border size="small" style="margin-top:12px">
+        <el-table
+          v-loading="detailLoading"
+          :data="detailList"
+          border size="small"
+          style="margin-top:12px"
+          @selection-change="onDetailSelectionChange"
+        >
+          <el-table-column type="selection" width="40" />
           <el-table-column label="原始文件名" min-width="200" show-overflow-tooltip>
             <template #default="{ row }">{{ row.originalFilename }}</template>
           </el-table-column>
@@ -381,7 +408,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { FolderChecked, Document, Clock, Refresh, Grid } from '@element-plus/icons-vue'
 import {
-  getArchiveHistory, updateRemark,
+  getArchiveHistory, updateRemark, batchAddTmdbTag,
   getBatchTasks, getBatchTask, getBatchTaskHistory,
   cancelBatchTask, pauseBatchTask, resumeBatchTask
 } from '@/api/archive'
@@ -397,7 +424,7 @@ const batchTotal = ref(0)
 let pollTimer = null
 
 const runningCount = computed(() =>
-  batchTasks.value.filter(t => t.status === 'RUNNING' || t.status === 'PENDING').length
+  batchTasks.value.filter(t => t.status === 'RUNNING' || t.status === 'PENDING' || t.status === 'PAUSING').length
 )
 
 async function loadBatchTasks() {
@@ -424,7 +451,7 @@ async function loadBatchTasks() {
 
 async function pollRunningTasks() {
   // 只刷新进行中任务的状态，避免全量请求闪烁
-  const running = batchTasks.value.filter(t => t.status === 'RUNNING' || t.status === 'PENDING')
+  const running = batchTasks.value.filter(t => t.status === 'RUNNING' || t.status === 'PENDING' || t.status === 'PAUSING')
   if (running.length === 0) {
     clearInterval(pollTimer)
     pollTimer = null
@@ -468,7 +495,7 @@ async function cancelBatchTaskFn(row) {
 async function pauseBatchTaskFn(row) {
   try {
     await pauseBatchTask(row.id)
-    ElMessage.success('任务已暂停')
+    ElMessage.success('暂停指令已发送，等待当前文件处理完成...')
     loadBatchTasks()
   } catch (e) {
     ElMessage.error('暂停失败: ' + e.message)
@@ -498,12 +525,12 @@ function progressStatus(row) {
 }
 
 function batchStatusType(s) {
-  const map = { PENDING: 'info', RUNNING: 'warning', PAUSED: 'info', COMPLETED: 'success', PARTIAL: 'warning', FAILED: 'danger' }
+  const map = { PENDING: 'info', RUNNING: 'warning', PAUSING: 'warning', PAUSED: 'info', COMPLETED: 'success', PARTIAL: 'warning', FAILED: 'danger' }
   return map[s] || 'info'
 }
 
 function batchStatusLabel(s) {
-  const map = { PENDING: '等待中', RUNNING: '进行中', PAUSED: '已暂停', COMPLETED: '已完成', PARTIAL: '部分完成', FAILED: '失败/取消' }
+  const map = { PENDING: '等待中', RUNNING: '进行中', PAUSING: '暂停中...', PAUSED: '已暂停', COMPLETED: '已完成', PARTIAL: '部分完成', FAILED: '失败/取消' }
   return map[s] || s
 }
 
@@ -517,6 +544,52 @@ const detailPage = ref(1)
 const detailPageSize = ref(20)
 const detailTotal = ref(0)
 const detailStatusFilter = ref('')
+
+// ─── 批量 TMDB 标记 ──────────────────────────────────────────────────────────
+
+const detailSelection = ref([])
+const batchTmdbId = ref('')
+const batchTagLoading = ref(false)
+
+function onDetailSelectionChange(rows) {
+  detailSelection.value = rows
+}
+
+async function handleBatchAddTmdbTag() {
+  const id = parseInt(batchTmdbId.value)
+  if (!id || id <= 0) {
+    ElMessage.warning('请输入有效的 TMDB ID')
+    return
+  }
+  const ids = detailSelection.value.map(r => r.id)
+  if (ids.length === 0) return
+
+  try {
+    await ElMessageBox.confirm(
+      `确认给选中的 ${ids.length} 个文件添加 [tmdbid=${id}] 标记？\n文件将被重命名。`,
+      '批量添加 TMDB 标记',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'info' }
+    )
+  } catch { return }
+
+  batchTagLoading.value = true
+  try {
+    const { data } = await batchAddTmdbTag(ids, id)
+    if (data?.successCount > 0) {
+      ElMessage.success(data.message)
+    }
+    if (data?.failCount > 0) {
+      ElMessage.warning(`部分失败: ${data.errors?.join('; ') || ''}`)
+    }
+    batchTmdbId.value = ''
+    detailSelection.value = []
+    await loadBatchDetail()
+  } catch (e) {
+    ElMessage.error('批量标记失败: ' + (e?.message || e))
+  } finally {
+    batchTagLoading.value = false
+  }
+}
 
 async function viewBatchDetail(row) {
   selectedBatchTask.value = row
@@ -573,7 +646,9 @@ function retryArchive(row) {
   currentFile.value = {
     fileName: row.originalFilename,
     filePath: row.originalPath || '',
-    rcloneConfigName: row.rcloneConfigName || ''
+    rcloneConfigName: row.rcloneConfigName || '',
+    batchTaskId: row.batchTaskId || null,
+    historyId: row.id || null          // 传递原记录ID，归档成功后更新而非新增
   }
   dialogVisible.value = true
 }
@@ -775,5 +850,22 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   padding: 8px 0;
+}
+
+/* 批量 TMDB 标记操作栏 */
+.batch-tmdb-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f0f9eb;
+  border-radius: 6px;
+  margin-top: 8px;
+}
+.batch-hint {
+  font-size: 13px;
+  color: #67c23a;
+  font-weight: 600;
+  white-space: nowrap;
 }
 </style>

@@ -142,7 +142,7 @@ public class FormatRenameServiceImpl implements IFormatRenameService {
         if (task == null || !"RUNNING".equals(task.getStatus())) return;
         FormatRenameTask upd = new FormatRenameTask();
         upd.setId(taskId);
-        upd.setStatus("PAUSED");
+        upd.setStatus("PAUSING");
         taskMapper.updateById(upd);
     }
 
@@ -183,6 +183,21 @@ public class FormatRenameServiceImpl implements IFormatRenameService {
             while (true) {
                 FormatRenameTask snap = taskMapper.selectById(taskId);
                 if (snap == null || "FAILED".equals(snap.getStatus())) return;
+                if ("PAUSING".equals(snap.getStatus())) {
+                    // 再次检查最新状态，防止 cancel 已将状态改为 FAILED 但被覆盖
+                    FormatRenameTask recheck = taskMapper.selectById(taskId);
+                    if (recheck == null || "FAILED".equals(recheck.getStatus())) return;
+                    // 线程已停在安全点，正式切为 PAUSED
+                    FormatRenameTask pauseUpd = new FormatRenameTask();
+                    pauseUpd.setId(taskId);
+                    pauseUpd.setStatus("PAUSED");
+                    taskMapper.updateById(pauseUpd);
+                    // 进入等待
+                    try { Thread.sleep(2000); } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt(); return;
+                    }
+                    continue;
+                }
                 if ("PAUSED".equals(snap.getStatus())) {
                     try { Thread.sleep(2000); } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt(); return;

@@ -57,6 +57,10 @@
             <el-icon class="menu-icon"><VideoPlay /></el-icon>
             <span>Emby管理</span>
           </el-menu-item>
+          <el-menu-item index="/emby-library" class="menu-item">
+            <el-icon class="menu-icon"><Checked /></el-icon>
+            <span>Emby库检查</span>
+          </el-menu-item>
           <el-menu-item index="/emby-config" class="menu-item">
             <el-icon class="menu-icon"><Setting /></el-icon>
             <span>Emby配置</span>

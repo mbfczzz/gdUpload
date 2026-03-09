@@ -11,7 +11,9 @@ import com.gdupload.dto.ArchiveAnalyzeResult;
 import com.gdupload.dto.ArchiveExecuteRequest;
 import com.gdupload.dto.ArchiveTmdbItem;
 import com.gdupload.dto.MediaInfoDto;
+import com.gdupload.entity.ArchiveBatchTask;
 import com.gdupload.entity.ArchiveHistory;
+import com.gdupload.mapper.ArchiveBatchTaskMapper;
 import com.gdupload.mapper.ArchiveHistoryMapper;
 import com.gdupload.service.IArchiveService;
 import com.gdupload.service.ISmartSearchConfigService;
@@ -39,6 +41,7 @@ import java.util.regex.Pattern;
 public class ArchiveServiceImpl implements IArchiveService {
 
     private final ArchiveHistoryMapper archiveHistoryMapper;
+    private final ArchiveBatchTaskMapper archiveBatchTaskMapper;
     private final ISmartSearchConfigService smartSearchConfigService;
     private final RcloneUtil rcloneUtil;
 
@@ -889,7 +892,48 @@ public class ArchiveServiceImpl implements IArchiveService {
     @Override
     public Map<String, Object> executeArchive(ArchiveExecuteRequest req) {
         Map<String, Object> result = new HashMap<>();
-        ArchiveHistory history = new ArchiveHistory();
+
+        // 有 historyId 时复用旧记录（重试 manual_required / failed），否则新建
+        ArchiveHistory history;
+        if (req.getHistoryId() != null) {
+            history = archiveHistoryMapper.selectById(req.getHistoryId());
+            if (history == null) {
+                log.warn("historyId={} 不存在，降级为新建记录", req.getHistoryId());
+                history = new ArchiveHistory();
+            }
+        } else {
+            history = new ArchiveHistory();
+        }
+
+        // 兜底：如果 rcloneConfigName 为空但路径不是绝对路径，尝试从关联的批量任务中获取
+        if (!notBlank(req.getRcloneConfigName())
+                && notBlank(req.getOriginalPath())
+                && !req.getOriginalPath().startsWith("/")) {
+            if (req.getBatchTaskId() != null) {
+                ArchiveBatchTask batchTask = archiveBatchTaskMapper.selectById(req.getBatchTaskId());
+                if (batchTask != null && notBlank(batchTask.getRcloneConfigName())) {
+                    log.info("兜底：从批量任务 {} 获取 rcloneConfigName={}", req.getBatchTaskId(), batchTask.getRcloneConfigName());
+                    req.setRcloneConfigName(batchTask.getRcloneConfigName());
+                }
+            }
+            // 如果仍然为空，说明是云盘路径但找不到 rcloneConfigName，报明确错误
+            if (!notBlank(req.getRcloneConfigName())) {
+                log.error("归档失败：路径 {} 不是绝对路径，但未提供 rcloneConfigName", req.getOriginalPath());
+                result.put("success", false);
+                result.put("message", "归档失败: 云盘路径缺少 rcloneConfigName，请检查");
+                history.setOriginalPath(req.getOriginalPath());
+                history.setOriginalFilename(Paths.get(req.getOriginalPath()).getFileName().toString());
+                history.setStatus("failed");
+                history.setFailReason("云盘路径缺少 rcloneConfigName");
+                if (history.getId() != null) {
+                    archiveHistoryMapper.updateById(history);
+                } else {
+                    archiveHistoryMapper.insert(history);
+                }
+                result.put("historyId", history.getId());
+                return result;
+            }
+        }
 
         String originalFilename = Paths.get(req.getOriginalPath()).getFileName().toString();
         history.setOriginalPath(req.getOriginalPath());
@@ -947,7 +991,12 @@ public class ArchiveServiceImpl implements IArchiveService {
             result.put("message", "归档失败: " + e.getMessage());
         }
 
-        archiveHistoryMapper.insert(history);
+        // 有 ID 说明是更新旧记录（重试），否则新增
+        if (history.getId() != null) {
+            archiveHistoryMapper.updateById(history);
+        } else {
+            archiveHistoryMapper.insert(history);
+        }
         result.put("historyId", history.getId());
         return result;
     }
@@ -979,6 +1028,26 @@ public class ArchiveServiceImpl implements IArchiveService {
         int exitCode = process.exitValue();
         if (exitCode != 0) {
             throw new RuntimeException("rclone moveto 失败(exit=" + exitCode + "): " + output);
+        }
+    }
+
+    /**
+     * 轻量级 rclone 重命名：同目录内改名，不建目录，短超时。
+     * 比 runRcloneMoveto 快很多，适合批量重命名场景。
+     */
+    private void runRcloneRename(String src, String dest) throws Exception {
+        Process process = new ProcessBuilder(
+                rclonePath, "moveto", "--config", rcloneConfigPath, src, dest)
+                .redirectErrorStream(true).start();
+        String output = readOutput(process);
+        boolean finished = process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS);
+        if (!finished) {
+            process.destroyForcibly();
+            throw new RuntimeException("rclone rename 超时");
+        }
+        int exitCode = process.exitValue();
+        if (exitCode != 0) {
+            throw new RuntimeException("rclone rename 失败(exit=" + exitCode + "): " + output);
         }
     }
 
@@ -1113,6 +1182,100 @@ public class ArchiveServiceImpl implements IArchiveService {
             history.setRemark(remark);
             archiveHistoryMapper.updateById(history);
         }
+    }
+
+    // ─── 批量添加 TMDB 标记 ──────────────────────────────────────────────────────
+
+    @Override
+    public Map<String, Object> batchAddTmdbTag(List<Long> historyIds, int tmdbId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        String tag = "[tmdbid=" + tmdbId + "]";
+
+        // 预先查询所有记录，构建重命名任务
+        List<ArchiveHistory> tasks = new ArrayList<>();
+        List<String[]> renamePairs = new ArrayList<>(); // [oldPath, newPath]
+        List<String> errors = Collections.synchronizedList(new ArrayList<>());
+
+        for (Long id : historyIds) {
+            ArchiveHistory history = archiveHistoryMapper.selectById(id);
+            if (history == null) {
+                errors.add("ID " + id + " 不存在");
+                continue;
+            }
+
+            String oldFilename = history.getOriginalFilename();
+            String cleanName = oldFilename.replaceAll("\\s*\\[tmdbid=\\d+\\]", "");
+
+            String newFilename;
+            int dotIdx = cleanName.lastIndexOf('.');
+            if (dotIdx > 0) {
+                newFilename = cleanName.substring(0, dotIdx) + " " + tag + cleanName.substring(dotIdx);
+            } else {
+                newFilename = cleanName + " " + tag;
+            }
+
+            String oldPath = history.getOriginalPath();
+            String newPath;
+            int lastSlash = oldPath.lastIndexOf('/');
+            if (lastSlash >= 0) {
+                newPath = oldPath.substring(0, lastSlash + 1) + newFilename;
+            } else {
+                newPath = newFilename;
+            }
+
+            tasks.add(history);
+            renamePairs.add(new String[]{oldPath, newPath, newFilename, oldFilename});
+        }
+
+        // 并发执行重命名（I/O 密集型，线程数可以开高）
+        int poolSize = Math.min(tasks.size(), 20);
+        java.util.concurrent.ExecutorService executor =
+                java.util.concurrent.Executors.newFixedThreadPool(poolSize);
+        java.util.concurrent.atomic.AtomicInteger successCount = new java.util.concurrent.atomic.AtomicInteger(0);
+        List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
+
+        for (int i = 0; i < tasks.size(); i++) {
+            final ArchiveHistory history = tasks.get(i);
+            final String[] pair = renamePairs.get(i);
+            futures.add(executor.submit(() -> {
+                try {
+                    if (notBlank(history.getRcloneConfigName())) {
+                        String remote = history.getRcloneConfigName();
+                        // 轻量级重命名：不建目录、短超时
+                        runRcloneRename(remote + ":" + pair[0], remote + ":" + pair[1]);
+                    } else {
+                        Path src = Paths.get(pair[0]);
+                        if (Files.exists(src)) {
+                            Files.move(src, Paths.get(pair[1]), StandardCopyOption.REPLACE_EXISTING);
+                        }
+                    }
+                    history.setOriginalPath(pair[1]);
+                    history.setOriginalFilename(pair[2]);
+                    archiveHistoryMapper.updateById(history);
+                    successCount.incrementAndGet();
+                    log.info("批量TMDB标记成功: {} → {}", pair[3], pair[2]);
+                } catch (Exception e) {
+                    errors.add(pair[3] + ": " + e.getMessage());
+                    log.error("批量TMDB标记失败: {} → {}, err={}", pair[3], pair[2], e.getMessage());
+                }
+            }));
+        }
+
+        // 等待全部完成
+        for (java.util.concurrent.Future<?> f : futures) {
+            try { f.get(); } catch (Exception ignored) {}
+        }
+        executor.shutdown();
+
+        int failCount = errors.size();
+        result.put("success", failCount == 0);
+        result.put("successCount", successCount.get());
+        result.put("failCount", failCount);
+        result.put("message", String.format("成功 %d 个，失败 %d 个", successCount.get(), failCount));
+        if (!errors.isEmpty()) {
+            result.put("errors", errors);
+        }
+        return result;
     }
 
     // ─── ffprobe 媒体信息 ──────────────────────────────────────────────────────

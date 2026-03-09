@@ -66,6 +66,15 @@ public class SubscribeBatchTaskController {
     }
 
     /**
+     * 恢复已暂停的任务
+     */
+    @PostMapping("/resume/{taskId}")
+    public Result<Void> resumeTask(@PathVariable Long taskId) {
+        taskService.resumeTask(taskId);
+        return Result.success();
+    }
+
+    /**
      * 获取任务详情
      */
     @GetMapping("/{taskId}")

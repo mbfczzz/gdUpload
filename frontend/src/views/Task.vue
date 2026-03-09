@@ -109,6 +109,15 @@
                 暂停
               </el-button>
               <el-button
+                v-if="row.status === 6"
+                type="warning"
+                size="small"
+                disabled
+              >
+                <el-icon><Loading /></el-icon>
+                暂停中...
+              </el-button>
+              <el-button
                 v-if="(row.status === 5 || (row.status === 2 && row.failedCount > 0)) && row.taskType !== 3 && row.taskType !== 5"
                 type="success"
                 size="small"
@@ -576,7 +585,8 @@ const getStatusType = (status) => {
     2: 'success',
     3: 'warning',
     4: 'info',
-    5: 'danger'
+    5: 'danger',
+    6: 'warning'
   }
   return types[status] || 'info'
 }
@@ -590,7 +600,8 @@ const getStatusText = (status, taskType) => {
       2: '已完成',
       3: '已暂停',
       4: '已取消',
-      5: '失败'
+      5: '失败',
+      6: '暂停中...'
     }
     return texts[status] || '未知'
   }
@@ -601,7 +612,8 @@ const getStatusText = (status, taskType) => {
       2: '已完成',
       3: '已暂停',
       4: '已取消',
-      5: '失败'
+      5: '失败',
+      6: '暂停中...'
     }
     return texts[status] || '未知'
   }
@@ -611,7 +623,8 @@ const getStatusText = (status, taskType) => {
     2: '已完成',
     3: '已暂停',
     4: '已取消',
-    5: '失败'
+    5: '失败',
+    6: '暂停中...'
   }
   return texts[status] || '未知'
 }

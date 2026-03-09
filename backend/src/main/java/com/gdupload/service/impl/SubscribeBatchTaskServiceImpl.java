@@ -95,10 +95,31 @@ public class SubscribeBatchTaskServiceImpl extends ServiceImpl<SubscribeBatchTas
             throw new BusinessException("任务未在执行中");
         }
 
+        // 先设为暂停中
+        task.setStatus("PAUSING");
+        baseMapper.updateById(task);
+
         log.info("暂停批量任务: taskId={}, taskName={}", taskId, task.getTaskName());
 
-        // 请求停止任务
+        // 请求停止任务（执行器检测到 STOP_FLAG 后会将状态设为 PAUSED）
         executorService.stopTask(taskId);
+    }
+
+    @Override
+    public void resumeTask(Long taskId) {
+        SubscribeBatchTask task = baseMapper.selectById(taskId);
+        if (task == null) {
+            throw new BusinessException("任务不存在");
+        }
+
+        if (!"PAUSED".equals(task.getStatus())) {
+            throw new BusinessException("任务未完全暂停，请稍等");
+        }
+
+        log.info("恢复批量任务: taskId={}, taskName={}", taskId, task.getTaskName());
+
+        // 恢复任务执行
+        executorService.resumeTask(taskId);
     }
 
     @Override

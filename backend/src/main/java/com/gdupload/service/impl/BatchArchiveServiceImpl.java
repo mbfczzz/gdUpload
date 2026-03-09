@@ -25,6 +25,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import com.gdupload.util.TaskPauseManager;
+
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -144,6 +146,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
 
     private void processBatchTask(Long taskId, String rcloneConfigName, String sourcePath,
                                   Set<String> skipPaths) {
+        final boolean isResume = !skipPaths.isEmpty();
         try {
             applyUpdate(taskId, t -> {
                 t.setStatus("RUNNING");
@@ -172,22 +175,29 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                     .filter(f -> isMediaFile(f.getName()))
                     .collect(Collectors.toList());
 
-            log.info("[{}] 扫描完成: 共 {} 项，媒体文件 {} 个", taskId, allItems.size(), mediaFiles.size());
+            // 总媒体文件数（含已处理的），始终保持 totalFiles = 全部媒体文件数量
+            final int totalMediaFiles = mediaFiles.size();
+            log.info("[{}] 扫描完成: 共 {} 项，媒体文件 {} 个", taskId, allItems.size(), totalMediaFiles);
 
             // 续跑模式：跳过已完成/已人工标记的文件，不重复处理
-            if (!skipPaths.isEmpty()) {
+            final int alreadyProcessed;
+            if (isResume) {
                 int before = mediaFiles.size();
                 mediaFiles = mediaFiles.stream()
                         .filter(f -> !skipPaths.contains(buildFullPath(sourcePath, f.getPath())))
                         .collect(Collectors.toList());
+                alreadyProcessed = before - mediaFiles.size();
                 log.info("[{}] 续跑模式：跳过已处理文件 {} 个，剩余待处理 {} 个",
-                        taskId, before - mediaFiles.size(), mediaFiles.size());
+                        taskId, alreadyProcessed, mediaFiles.size());
+            } else {
+                alreadyProcessed = 0;
             }
 
-            final int total = mediaFiles.size();
-            applyUpdate(taskId, t -> t.setTotalFiles(total));
+            final int remaining = mediaFiles.size();
+            // totalFiles 始终为全部媒体文件数（包括已处理的），保持前端进度条连贯
+            applyUpdate(taskId, t -> t.setTotalFiles(totalMediaFiles));
 
-            if (total == 0) {
+            if (remaining == 0) {
                 applyUpdate(taskId, t -> { t.setStatus("COMPLETED"); t.setCurrentFile(null); });
                 return;
             }
@@ -200,12 +210,28 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             // 取消标志
             AtomicInteger cancelFlag = new AtomicInteger(0);
 
-            // ── 原子计数器：替代每次 synchronized DB 读写，定期刷回 ──
-            AtomicInteger processedCounter = new AtomicInteger(0);
-            AtomicInteger successCounter   = new AtomicInteger(0);
-            AtomicInteger failedCounter    = new AtomicInteger(0);
-            AtomicInteger manualCounter    = new AtomicInteger(0);
+            // ── 原子计数器：续跑时从 DB 已有进度开始累加，避免覆盖已积累的数据 ──
+            final int initProcessed, initSuccess, initFailed, initManual;
+            if (isResume) {
+                ArchiveBatchTask snap = batchTaskMapper.selectById(taskId);
+                initProcessed = snap != null ? snap.getProcessedFiles() : 0;
+                initSuccess   = snap != null ? snap.getSuccessCount()   : 0;
+                initFailed    = snap != null ? snap.getFailedCount()    : 0;
+                initManual    = snap != null ? snap.getManualCount()    : 0;
+            } else {
+                initProcessed = 0;
+                initSuccess   = 0;
+                initFailed    = 0;
+                initManual    = 0;
+            }
+            AtomicInteger processedCounter = new AtomicInteger(initProcessed);
+            AtomicInteger successCounter   = new AtomicInteger(initSuccess);
+            AtomicInteger failedCounter    = new AtomicInteger(initFailed);
+            AtomicInteger manualCounter    = new AtomicInteger(initManual);
             AtomicInteger sinceLastFlush   = new AtomicInteger(0);
+
+            // ── 注册到 TaskPauseManager（初始 0，每提交一个任务时 addActiveThread）──
+            TaskPauseManager.register(taskId, 0);
 
             // 使用可配置线程数（I/O 密集型，rclone moveto + TMDB HTTP）
             log.info("[{}] 启动 {} 线程并行处理", taskId, batchThreads);
@@ -227,12 +253,18 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
 
                 // 暂停 & 槽位等待：二合一循环
                 while (true) {
+                    // 优先检查 TaskPauseManager 的停止标志
+                    if (TaskPauseManager.shouldStop(taskId)) {
+                        cancelFlag.set(1);
+                        break;
+                    }
+
                     ArchiveBatchTask snap = batchTaskMapper.selectById(taskId);
                     if (snap == null || "FAILED".equals(snap.getStatus())) {
                         cancelFlag.set(1);
                         break;
                     }
-                    if ("PAUSED".equals(snap.getStatus())) {
+                    if ("PAUSED".equals(snap.getStatus()) || "PAUSING".equals(snap.getStatus())) {
                         try { Thread.sleep(2000); } catch (InterruptedException ie) {
                             Thread.currentThread().interrupt();
                             cancelFlag.set(1);
@@ -255,9 +287,11 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 // 更新当前文件名（低频操作，直接写DB）
                 applyUpdate(taskId, t -> t.setCurrentFile(fname));
 
+                // 每提交一个任务，增加 activeThread 计数（与 onThreadFinished 配对）
+                TaskPauseManager.addActiveThread(taskId);
                 futures.add(pool.submit(() -> {
                     try {
-                        if (cancelFlag.get() != 0) return;
+                        if (cancelFlag.get() != 0 || TaskPauseManager.shouldStop(taskId)) return;
                         int result = safeProcessOneFile(taskId, rcloneConfigName, sourcePath,
                                 file, tmdbCache, aiResultCache, aiSem);
                         // 0=success, 1=failed, 2=manual
@@ -274,6 +308,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                         }
                     } finally {
                         sem.release();
+                        TaskPauseManager.onThreadFinished(taskId);
                     }
                 }));
             }
@@ -288,9 +323,16 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             // 最终刷一次计数器
             flushCounters(taskId, processedCounter, successCounter, failedCounter, manualCounter);
 
-            // 4. 更新最终状态
+            // 4. 更新最终状态（如果不是被暂停中断的）
             ArchiveBatchTask finalSnap = batchTaskMapper.selectById(taskId);
-            if (finalSnap != null && !"FAILED".equals(finalSnap.getStatus())) {
+            if (finalSnap != null && "PAUSING".equals(finalSnap.getStatus())) {
+                // activeThreads 现在精确等于实际提交数，TaskPauseManager 回调应已触发。
+                // 此处做兜底：如果回调因极端时序未触发（如 pool.shutdown 在最后一个
+                // onThreadFinished 之前就返回了），手动设为 PAUSED 保证不卡在 PAUSING。
+                applyUpdate(taskId, t -> { t.setStatus("PAUSED"); t.setCurrentFile(null); });
+                log.info("[{}] 暂停完成（兜底）: taskId={}", taskId, taskId);
+            } else if (finalSnap != null && !"FAILED".equals(finalSnap.getStatus())
+                    && !"PAUSED".equals(finalSnap.getStatus())) {
                 boolean hasIssues = finalSnap.getManualCount() > 0 || finalSnap.getFailedCount() > 0;
                 String finalStatus = hasIssues ? "PARTIAL" : "COMPLETED";
                 applyUpdate(taskId, t -> { t.setStatus(finalStatus); t.setCurrentFile(null); });
@@ -300,6 +342,8 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         } catch (Exception e) {
             log.error("[{}] 批量归档任务异常", taskId, e);
             applyUpdate(taskId, t -> { t.setStatus("FAILED"); t.setErrorMessage(e.getMessage()); });
+        } finally {
+            TaskPauseManager.unregister(taskId);
         }
     }
 
@@ -472,6 +516,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
                 h.setBatchTaskId(taskId);
                 h.setOriginalPath(fullPath);
                 h.setOriginalFilename(filename);
+                h.setRcloneConfigName(rcloneConfigName);
                 h.setStatus("manual_required");
                 h.setProcessMethod("manual");
                 h.setRemark("批量归档无法自动匹配 TMDB");
@@ -485,6 +530,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             h.setBatchTaskId(taskId);
             h.setOriginalPath(fullPath);
             h.setOriginalFilename(filename);
+            h.setRcloneConfigName(rcloneConfigName);
             h.setStatus("failed");
             h.setProcessMethod("auto");
             h.setFailReason(e.getMessage());
@@ -524,6 +570,11 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             t.setStatus("FAILED");
             t.setCurrentFile(null);
             t.setErrorMessage("用户手动取消");
+        });
+        // 通知 TaskPauseManager 停止线程（如果正在 PAUSING，需要防止回调把 FAILED 改回 PAUSED）
+        TaskPauseManager.requestCancel(taskId, id -> {
+            // 取消场景下回调不改状态（FAILED 已是最终状态）
+            log.info("批量任务取消-所有线程已结束: taskId={}", id);
         });
         log.info("批量任务已取消: taskId={}", taskId);
     }
@@ -606,12 +657,22 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
 
     @Override
     public void pauseTask(Long taskId) {
-        applyUpdate(taskId, t -> {
-            if ("RUNNING".equals(t.getStatus())) {
-                t.setStatus("PAUSED");
-            }
+        ArchiveBatchTask task = batchTaskMapper.selectById(taskId);
+        if (task == null || !"RUNNING".equals(task.getStatus())) {
+            log.warn("任务不在运行中，无法暂停: taskId={}, status={}", taskId, task != null ? task.getStatus() : "null");
+            return;
+        }
+
+        // 先设置为 PAUSING（暂停中），等待工作线程结束
+        applyUpdate(taskId, t -> t.setStatus("PAUSING"));
+
+        // 通过 TaskPauseManager 请求暂停，所有线程结束后回调设为 PAUSED
+        TaskPauseManager.requestPause(taskId, id -> {
+            applyUpdate(id, t -> t.setStatus("PAUSED"));
+            log.info("批量归档任务暂停完成（所有线程已结束）: taskId={}", id);
         });
-        log.info("批量任务已暂停: taskId={}", taskId);
+
+        log.info("批量归档任务暂停中: taskId={}", taskId);
     }
 
     @Override
@@ -620,8 +681,19 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
         if (task == null) return;
 
         if ("PAUSED".equals(task.getStatus())) {
-            applyUpdate(taskId, t -> t.setStatus("RUNNING"));
-            log.info("批量任务已恢复(PAUSED→RUNNING): taskId={}", taskId);
+            // 暂停完成后恢复：需要重新提交执行（跳过已处理的文件）
+            Set<String> skipPaths = loadProcessedPaths(taskId);
+            applyUpdate(taskId, t -> {
+                t.setStatus("RUNNING");
+                t.setCurrentFile(null);
+            });
+            String configName  = task.getRcloneConfigName();
+            String sourcePath  = task.getSourcePath();
+            Thread thread = new Thread(() -> processBatchTask(taskId, configName, sourcePath, skipPaths));
+            thread.setDaemon(true);
+            thread.setName("batch-archive-" + taskId);
+            thread.start();
+            log.info("批量任务已恢复(PAUSED→续跑): taskId={}, 跳过已处理 {} 个文件", taskId, skipPaths.size());
 
         } else if ("FAILED".equals(task.getStatus())) {
             Set<String> skipPaths = loadProcessedPaths(taskId);
@@ -642,6 +714,7 @@ public class BatchArchiveServiceImpl implements IBatchArchiveService {
             thread.start();
             log.info("批量任务已重新提交(FAILED→续跑): taskId={}, 跳过已处理 {} 个文件", taskId, skipPaths.size());
         }
+        // PAUSING 状态不允许恢复（工作线程尚未全部退出，需等待 PAUSED 后再恢复）
     }
 
     // ─── 成人内容检测 ─────────────────────────────────────────────────────────

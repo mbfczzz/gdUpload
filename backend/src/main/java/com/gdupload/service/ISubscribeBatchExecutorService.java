@@ -19,9 +19,16 @@ public interface ISubscribeBatchExecutorService {
     void executeTask(SubscribeBatchTask task);
 
     /**
-     * 停止任务执行
+     * 停止/暂停任务执行
      *
      * @param taskId 任务ID
      */
     void stopTask(Long taskId);
+
+    /**
+     * 恢复已暂停的任务
+     *
+     * @param taskId 任务ID
+     */
+    void resumeTask(Long taskId);
 }

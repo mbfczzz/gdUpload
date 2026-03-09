@@ -10,6 +10,7 @@ import com.gdupload.service.ISystemLogService;
 import com.gdupload.service.IUploadService;
 import com.gdupload.service.IUploadTaskService;
 import com.gdupload.service.IEmbyService;
+import com.gdupload.util.TaskPauseManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
@@ -99,6 +100,10 @@ public class UploadTaskController {
         UploadTask task = uploadTaskService.getTaskDetail(id);
         if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
             // Emby下载任务：重新启动（会自动跳过已下载的文件）
+            // 仅允许从待开始(0)、已暂停(3)、失败(5)状态启动，不允许从运行中(1)或暂停中(6)启动
+            if (task.getStatus() == 1 || task.getStatus() == 6) {
+                return Result.error("任务正在运行或暂停中，无法重新启动");
+            }
             try {
                 // 获取任务的文件列表（itemIds）
                 List<FileInfo> fileList = fileInfoService.getTaskFiles(id);
@@ -128,20 +133,26 @@ public class UploadTaskController {
     @PutMapping("/{id}/pause")
     public Result<Void> pause(@PathVariable Long id) {
         UploadTask task = uploadTaskService.getTaskDetail(id);
-        if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
-            // Emby下载任务
+        if (task != null && task.getTaskType() != null
+                && (task.getTaskType() == 3 || task.getTaskType() == 5)) {
+            // Emby下载任务 / Emby下载上传任务
             boolean success = embyService.pauseDownloadTask(id);
-            return success ? Result.success("任务已暂停") : Result.error("暂停失败");
+            return success ? Result.success("暂停中，等待工作线程结束...") : Result.error("暂停失败");
         }
         uploadService.stopTask(id);
-        return Result.success("任务已暂停");
+        return Result.success("暂停中，等待工作线程结束...");
     }
 
     @PutMapping("/{id}/resume")
     public Result<Void> resume(@PathVariable Long id) {
         UploadTask task = uploadTaskService.getTaskDetail(id);
-        if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
-            // Emby下载任务：支持断点续传
+        if (task != null && task.getTaskType() != null
+                && (task.getTaskType() == 3 || task.getTaskType() == 5)) {
+            // Emby下载任务 / Emby下载上传任务：仅允许从已暂停(3)状态恢复
+            // 暂停中(6)时工作线程尚未全部退出，恢复会导致新旧线程并行的竞态条件
+            if (task.getStatus() != 3) {
+                return Result.error("任务尚未完全暂停，请等待暂停完成后再恢复");
+            }
             try {
                 // 从FileInfo表中获取所有文件的itemId（存储在filePath字段）
                 List<FileInfo> fileInfoList = fileInfoService.getTaskFiles(id);
@@ -170,12 +181,19 @@ public class UploadTaskController {
     @PutMapping("/{id}/cancel")
     public Result<Void> cancel(@PathVariable Long id) {
         UploadTask task = uploadTaskService.getTaskDetail(id);
-        if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
-            // Emby下载任务
+        if (task != null && task.getTaskType() != null
+                && (task.getTaskType() == 3 || task.getTaskType() == 5)) {
+            // Emby下载任务 / Emby下载上传任务
             boolean success = embyService.cancelDownloadTask(id);
             return success ? Result.success("任务已取消") : Result.error("取消失败");
         }
+        // 先用 requestCancel 覆盖可能存在的暂停回调（必须在 stopTask 之后、cancelTask 之前），
+        // 防止 stopTask 注册的暂停回调在窗口期触发，将取消状态改回已暂停
         uploadService.stopTask(id);
+        TaskPauseManager.requestCancel(id, tid -> {
+            log.info("上传任务取消-所有线程已结束: taskId={}", tid);
+        });
+        // requestCancel 已保证暂停回调不会再触发，现在安全地设置最终取消状态
         boolean success = uploadTaskService.cancelTask(id);
         return success ? Result.success("任务已取消") : Result.error("取消失败");
     }

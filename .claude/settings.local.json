@@ -27,7 +27,10 @@
       "Bash(gh repo view:*)",
       "Bash(wc:*)",
       "Bash(./mvnw compile:*)",
-      "Bash(where mvn:*)"
+      "Bash(where mvn:*)",
+      "Bash(npx vue-tsc:*)",
+      "Bash(cmd:*)",
+      "Bash(grep:*)"
     ]
   }
 }

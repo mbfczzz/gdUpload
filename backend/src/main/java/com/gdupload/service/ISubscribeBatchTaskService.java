@@ -38,6 +38,13 @@ public interface ISubscribeBatchTaskService extends IService<SubscribeBatchTask>
     void pauseTask(Long taskId);
 
     /**
+     * 恢复已暂停的任务
+     *
+     * @param taskId 任务ID
+     */
+    void resumeTask(Long taskId);
+
+    /**
      * 获取任务详情
      *
      * @param taskId 任务ID

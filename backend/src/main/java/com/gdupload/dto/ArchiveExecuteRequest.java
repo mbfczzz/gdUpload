@@ -40,4 +40,7 @@ public class ArchiveExecuteRequest {
 
     /** 所属批量任务ID（单文件归档时为 null） */
     private Long batchTaskId;
+
+    /** 关联的归档历史ID（重试 manual_required/failed 时传入，更新原记录而非新增） */
+    private Long historyId;
 }

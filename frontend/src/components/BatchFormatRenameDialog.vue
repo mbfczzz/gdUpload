@@ -49,14 +49,17 @@
         <el-tag v-if="phase === 'RUNNING'" type="warning" size="small">
           <el-icon class="rotating"><Loading /></el-icon> 进行中
         </el-tag>
+        <el-tag v-else-if="phase === 'PAUSING'" type="warning" size="small">
+          <el-icon class="rotating"><Loading /></el-icon> 暂停中...
+        </el-tag>
         <el-tag v-else-if="phase === 'PAUSED'" type="info" size="small">⏸ 已暂停</el-tag>
         <el-tag v-else-if="phase === 'DONE'"   type="success" size="small">完成</el-tag>
         <el-tag v-else-if="phase === 'ERROR'"  type="danger"  size="small">失败/取消</el-tag>
       </div>
 
       <!-- 当前文件 -->
-      <div v-if="currentFile && (phase === 'RUNNING' || phase === 'PAUSED')" class="current-file">
-        ▶ {{ currentFile }}
+      <div v-if="currentFile && (phase === 'RUNNING' || phase === 'PAUSED' || phase === 'PAUSING')" class="current-file">
+        {{ phase === 'PAUSING' ? '⏳' : '▶' }} {{ currentFile }}
       </div>
 
       <!-- 跳转提示 -->
@@ -71,8 +74,18 @@
         <el-button @click="visible = false">取消</el-button>
         <el-button type="primary" :loading="starting" @click="startTask">开始格式化</el-button>
       </template>
-      <template v-else-if="phase === 'RUNNING' || phase === 'PAUSED'">
+      <template v-else-if="phase === 'RUNNING' || phase === 'PAUSED' || phase === 'PAUSING'">
         <el-button @click="runInBackground">后台运行</el-button>
+        <el-button
+          v-if="phase === 'RUNNING'"
+          type="info"
+          @click="pauseTask"
+        >暂停</el-button>
+        <el-button
+          v-if="phase === 'PAUSED'"
+          type="success"
+          @click="doResumeTask"
+        >恢复</el-button>
         <el-button type="warning" @click="cancelTask">取消任务</el-button>
       </template>
       <template v-else>
@@ -86,7 +99,7 @@
 import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Folder, Loading, InfoFilled } from '@element-plus/icons-vue'
-import { startFormatRenameTask, getFormatRenameTask, cancelFormatRenameTask } from '@/api/formatRename'
+import { startFormatRenameTask, getFormatRenameTask, cancelFormatRenameTask, pauseFormatRenameTask, resumeFormatRenameTask } from '@/api/formatRename'
 
 const props = defineProps({
   modelValue:    Boolean,
@@ -168,6 +181,24 @@ async function cancelTask() {
   } catch { /* 静默 */ }
 }
 
+// ── 暂停任务 ───────────────────────────────────────────────────────────────────
+async function pauseTask() {
+  if (!taskId.value) return
+  try {
+    await pauseFormatRenameTask(taskId.value)
+    phase.value = 'PAUSING'
+  } catch { /* 静默 */ }
+}
+
+// ── 恢复任务 ───────────────────────────────────────────────────────────────────
+async function doResumeTask() {
+  if (!taskId.value) return
+  try {
+    await resumeFormatRenameTask(taskId.value)
+    phase.value = 'RUNNING'
+  } catch { /* 静默 */ }
+}
+
 // ── 后台运行（关闭弹窗，任务继续） ────────────────────────────────────────────
 function runInBackground() {
   stopPolling()
@@ -191,6 +222,7 @@ function mapStatus(status) {
   if (status === 'COMPLETED') return 'DONE'
   if (status === 'FAILED')    return 'ERROR'
   if (status === 'PAUSED')    return 'PAUSED'
+  if (status === 'PAUSING')   return 'PAUSING'
   return 'RUNNING'  // PENDING / RUNNING
 }
 

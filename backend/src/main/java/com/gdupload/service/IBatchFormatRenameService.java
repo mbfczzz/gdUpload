@@ -22,4 +22,14 @@ public interface IBatchFormatRenameService {
      * 取消任务
      */
     void cancelTask(String taskId);
+
+    /**
+     * 暂停任务
+     */
+    void pauseTask(String taskId);
+
+    /**
+     * 恢复已暂停的任务
+     */
+    void resumeTask(String taskId);
 }

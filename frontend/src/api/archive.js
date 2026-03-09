@@ -49,6 +49,11 @@ export function updateRemark(id, remark) {
   return request.put(`/archive/history/${id}/remark`, { remark })
 }
 
+/** 批量给文件添加 TMDB ID 标记（重命名追加 [tmdbid=xxx]） */
+export function batchAddTmdbTag(historyIds, tmdbId) {
+  return request.post('/archive/batch-add-tmdb-tag', { historyIds, tmdbId })
+}
+
 /** 用 ffprobe 探测媒体信息（rcloneConfigName 有值时走 rclone 管道读云端文件） */
 export function getMediaInfo(filePath, rcloneConfigName) {
   return request.get('/archive/media-info', { params: { filePath, rcloneConfigName } })

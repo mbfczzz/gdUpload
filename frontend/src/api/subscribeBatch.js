@@ -29,6 +29,14 @@ export function pauseTask(taskId) {
   })
 }
 
+// 恢复任务
+export function resumeTask(taskId) {
+  return request({
+    url: `/subscribe-batch/resume/${taskId}`,
+    method: 'post'
+  })
+}
+
 // 获取任务详情
 export function getTaskDetail(taskId) {
   return request({

@@ -104,6 +104,24 @@ public class GdFileManagerController {
     }
 
     /**
+     * 暂停批量格式化命名任务
+     */
+    @PutMapping("/batch-format/{taskId}/pause")
+    public Result<Void> pauseBatchFormat(@PathVariable String taskId) {
+        batchFormatRenameService.pauseTask(taskId);
+        return Result.success("暂停中，等待工作线程结束...");
+    }
+
+    /**
+     * 恢复批量格式化命名任务
+     */
+    @PutMapping("/batch-format/{taskId}/resume")
+    public Result<Void> resumeBatchFormat(@PathVariable String taskId) {
+        batchFormatRenameService.resumeTask(taskId);
+        return Result.success("任务已恢复");
+    }
+
+    /**
      * 创建目录
      */
     @PostMapping("/mkdir")

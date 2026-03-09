@@ -53,10 +53,11 @@
             <div class="progress-text">
               {{ row.processedFiles }} / {{ row.totalFiles }} 个文件
             </div>
-            <div v-if="row.status === 'RUNNING' && row.currentFile" class="current-file">
-              ▶ {{ row.currentFile }}
+            <div v-if="(row.status === 'RUNNING' || row.status === 'PAUSING') && row.currentFile" class="current-file">
+              {{ row.status === 'PAUSING' ? '⏳' : '▶' }} {{ row.currentFile }}
             </div>
             <div v-if="row.status === 'PAUSED'" class="paused-tip">⏸ 已暂停</div>
+            <div v-if="row.status === 'PAUSING'" class="paused-tip">⏳ 暂停中...</div>
           </template>
         </el-table-column>
 
@@ -88,7 +89,7 @@
               @click="resumeTask(row)"
             >继续</el-button>
             <el-button
-              v-if="['RUNNING','PAUSED','PENDING'].includes(row.status)"
+              v-if="['RUNNING','PAUSED','PENDING','PAUSING'].includes(row.status)"
               type="danger" link size="small"
               @click="cancelTask(row)"
             >取消</el-button>
@@ -256,7 +257,7 @@ const taskPageSize = ref(10)
 const taskTotal    = ref(0)
 
 const runningCount = computed(() =>
-  tasks.value.filter(t => t.status === 'RUNNING' || t.status === 'PAUSED').length
+  tasks.value.filter(t => t.status === 'RUNNING' || t.status === 'PAUSED' || t.status === 'PAUSING').length
 )
 
 async function loadTasks() {
@@ -278,10 +279,10 @@ let pollTimer = null
 function startPoll() {
   stopPoll()
   pollTimer = setInterval(async () => {
-    if (!tasks.value.some(t => t.status === 'RUNNING' || t.status === 'PENDING')) return
+    if (!tasks.value.some(t => t.status === 'RUNNING' || t.status === 'PENDING' || t.status === 'PAUSING')) return
     await loadTasks()
     if (detailVisible.value && selectedTask.value &&
-        ['RUNNING', 'PENDING'].includes(selectedTask.value.status)) {
+        ['RUNNING', 'PENDING', 'PAUSING'].includes(selectedTask.value.status)) {
       await refreshDetail()
     }
   }, 3000)
@@ -387,11 +388,11 @@ function calcPercent(row) {
 }
 
 function statusLabel(s) {
-  return { PENDING: '等待中', RUNNING: '进行中', PAUSED: '已暂停',
+  return { PENDING: '等待中', RUNNING: '进行中', PAUSING: '暂停中...', PAUSED: '已暂停',
            COMPLETED: '已完成', FAILED: '失败/取消' }[s] || s
 }
 function statusType(s) {
-  return { PENDING: 'info', RUNNING: 'warning', PAUSED: 'info',
+  return { PENDING: 'info', RUNNING: 'warning', PAUSING: 'warning', PAUSED: 'info',
            COMPLETED: 'success', FAILED: 'danger' }[s] || 'info'
 }
 function progressStatus(s) {

@@ -11,6 +11,7 @@ import com.gdupload.util.DateTimeUtil;
 import com.gdupload.util.DbRetryUtil;
 import com.gdupload.util.RcloneResult;
 import com.gdupload.util.RcloneUtil;
+import com.gdupload.util.TaskPauseManager;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -91,13 +92,11 @@ public class UploadServiceImpl implements IUploadService {
     @Override
     @Async("taskExecutor")
     public void executeTask(Long taskId) {
-        if (runningTasks.containsKey(taskId)) {
+        if (runningTasks.putIfAbsent(taskId, true) != null) {
             log.warn("任务已在运行中: taskId={}", taskId);
             return;
         }
-
-        runningTasks.put(taskId, true);
-        // 创建任务中断标志
+        // 创建任务中断标志（通过 TaskPauseManager 统一管理）
         AtomicBoolean stopFlag = new AtomicBoolean(false);
         taskStopFlags.put(taskId, stopFlag);
 
@@ -127,6 +126,10 @@ public class UploadServiceImpl implements IUploadService {
 
             // 计算总大小（包括待上传和已上传的文件）
             List<FileInfo> allFiles = fileInfoService.getTaskFiles(taskId);
+
+            // ── 注册到 TaskPauseManager（pendingFiles.size 为工作项数量）──
+            TaskPauseManager.register(taskId, pendingFiles.size());
+
             long totalSize = allFiles.stream().mapToLong(FileInfo::getFileSize).sum();
             task.setTotalSize(totalSize);
 
@@ -283,6 +286,7 @@ public class UploadServiceImpl implements IUploadService {
                             taskId, currentFile.getId(), currentFile.getFileName(), e);
                         processedCount.incrementAndGet();
                     } finally {
+                        TaskPauseManager.onThreadFinished(taskId);
                         latch.countDown();
                     }
                 });
@@ -294,18 +298,15 @@ public class UploadServiceImpl implements IUploadService {
                     while (!latch.await(1, TimeUnit.SECONDS)) {
                         // 检查任务状态
                         UploadTask currentTask = uploadTaskService.getTaskDetail(taskId);
-                        if (currentTask.getStatus() == 3) {
+                        if (currentTask.getStatus() == 6 || currentTask.getStatus() == 3) {
+                            // 6=暂停中, 3=已暂停（兼容直接设3的旧场景）
                             log.info("任务被暂停，设置中断标志: taskId={}", taskId);
                             stopFlag.set(true);
-                            systemLogService.logTaskOperation(taskId, currentTask.getTaskName(), "TASK_PAUSE",
-                                String.format("任务已暂停 - 已上传 %d/%d 个文件", uploadedCount.get(), currentTask.getTotalCount()));
                             break;
                         }
                         if (currentTask.getStatus() == 4) {
                             log.info("任务被取消，设置中断标志: taskId={}", taskId);
                             stopFlag.set(true);
-                            systemLogService.logTaskOperation(taskId, currentTask.getTaskName(), "TASK_CANCEL",
-                                String.format("任务已取消 - 已上传 %d/%d 个文件", uploadedCount.get(), currentTask.getTotalCount()));
                             break;
                         }
                     }
@@ -386,6 +387,7 @@ public class UploadServiceImpl implements IUploadService {
         } finally {
             runningTasks.remove(taskId);
             taskStopFlags.remove(taskId);
+            TaskPauseManager.unregister(taskId);
         }
     }
 
@@ -760,9 +762,25 @@ public class UploadServiceImpl implements IUploadService {
 
     @Override
     public void stopTask(Long taskId) {
-        runningTasks.remove(taskId);
+        // 注意：不要在这里 remove runningTasks，由 executeTask 的 finally 块统一清理
+        // 否则会导致暂停→恢复期间 runningTasks 守卫失效，允许重复启动 executeTask
+        // 先设置状态为6(暂停中)
         uploadTaskService.pauseTask(taskId);
-        log.info("停止任务: taskId={}", taskId);
+
+        // 同时设置本地 stopFlag，让工作线程立即停止（不依赖监控线程的1秒DB轮询延迟）
+        AtomicBoolean localFlag = taskStopFlags.get(taskId);
+        if (localFlag != null) {
+            localFlag.set(true);
+        }
+
+        // 通过 TaskPauseManager 请求暂停，当所有线程结束后自动变为3(已暂停)
+        TaskPauseManager.requestPause(taskId, id -> {
+            uploadTaskService.completePause(id);
+            webSocketService.pushTaskStatus(id, 3, "已暂停");
+            log.info("任务暂停完成（所有线程已结束）: taskId={}", id);
+        });
+
+        log.info("停止任务（暂停中）: taskId={}", taskId);
     }
 
     @Override

@@ -83,4 +83,14 @@ public interface IArchiveService {
      * 更新人工处理备注
      */
     void updateRemark(Long historyId, String remark);
+
+    /**
+     * 批量给文件添加 TMDB ID 标记：重命名原始文件名追加 [tmdbid=xxx]，
+     * 同时更新数据库记录的 originalPath 和 originalFilename。
+     *
+     * @param historyIds 归档历史记录 ID 列表
+     * @param tmdbId     要添加的 TMDB ID
+     * @return 操作结果
+     */
+    Map<String, Object> batchAddTmdbTag(List<Long> historyIds, int tmdbId);
 }

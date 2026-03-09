@@ -230,7 +230,7 @@
         <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="row.status === 'PENDING' || row.status === 'PAUSED'"
+              v-if="row.status === 'PENDING'"
               link
               type="primary"
               size="small"
@@ -246,6 +246,15 @@
               @click="handlePauseTask(row.id)"
             >
               暂停
+            </el-button>
+            <el-button
+              v-if="row.status === 'PAUSED'"
+              link
+              type="success"
+              size="small"
+              @click="handleResumeTask(row.id)"
+            >
+              恢复
             </el-button>
             <el-button
               link
@@ -318,6 +327,7 @@ import {
   createBatchTask,
   startTask,
   pauseTask,
+  resumeTask,
   getTaskPage,
   getTaskLogs,
   deleteTask
@@ -551,10 +561,21 @@ const handleStartTask = async (taskId) => {
 const handlePauseTask = async (taskId) => {
   try {
     await pauseTask(taskId)
-    ElMessage.success('任务已暂停')
+    ElMessage.success('暂停指令已发送')
     await loadTaskList()
   } catch (error) {
     console.error('暂停任务失败:', error)
+  }
+}
+
+// 恢复任务
+const handleResumeTask = async (taskId) => {
+  try {
+    await resumeTask(taskId)
+    ElMessage.success('任务已恢复')
+    await loadTaskList()
+  } catch (error) {
+    console.error('恢复任务失败:', error)
   }
 }
 
@@ -597,6 +618,7 @@ const getStatusType = (status) => {
   const typeMap = {
     'PENDING': 'info',
     'RUNNING': 'success',
+    'PAUSING': 'warning',
     'PAUSED': 'warning',
     'COMPLETED': 'success',
     'FAILED': 'danger'
@@ -609,6 +631,7 @@ const getStatusText = (status) => {
   const textMap = {
     'PENDING': '待执行',
     'RUNNING': '执行中',
+    'PAUSING': '暂停中...',
     'PAUSED': '已暂停',
     'COMPLETED': '已完成',
     'FAILED': '失败'
