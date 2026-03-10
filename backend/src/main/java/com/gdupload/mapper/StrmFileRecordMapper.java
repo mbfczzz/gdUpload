@@ -21,11 +21,11 @@ public interface StrmFileRecordMapper extends BaseMapper<StrmFileRecord> {
     @Insert({
         "<script>",
         "INSERT INTO strm_file_record",
-        "  (watch_config_id, gd_remote, rel_file_path, file_mod_time,",
+        "  (watch_config_id, gd_remote, rel_file_path, path_hash, file_mod_time,",
         "   strm_local_path, nfo_local_path, show_dir, tmdb_id, status, fail_reason)",
         "VALUES",
         "<foreach collection='list' item='r' separator=','>",
-        "  (#{r.watchConfigId}, #{r.gdRemote}, #{r.relFilePath}, #{r.fileModTime},",
+        "  (#{r.watchConfigId}, #{r.gdRemote}, #{r.relFilePath}, #{r.pathHash}, #{r.fileModTime},",
         "   #{r.strmLocalPath}, #{r.nfoLocalPath}, #{r.showDir}, #{r.tmdbId},",
         "   #{r.status}, #{r.failReason})",
         "</foreach>",

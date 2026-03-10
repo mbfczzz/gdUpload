@@ -53,6 +53,13 @@ public class StrmCoreHelper {
             "mkv", "mp4", "avi", "ts", "m2ts", "mov", "wmv", "flv", "rmvb", "rm", "m4v"
     )));
 
+    /** 已知的媒体分类 */
+    static final Set<String> VALID_CATEGORIES = Collections.unmodifiableSet(new HashSet<>(Arrays.asList(
+            "动画电影", "动画剧集", "儿童剧集", "国产动漫", "国产剧集",
+            "日韩剧集", "华语电影", "纪录片", "欧美剧集", "外语电影",
+            "其他剧集", "综艺", "合集", "演唱会"
+    )));
+
     /** 图片下载专用线程池（32线程，守护，不阻塞主处理循环） */
     private final ExecutorService imgPool = Executors.newFixedThreadPool(32, r -> {
         Thread t = new Thread(r);
@@ -273,7 +280,10 @@ public class StrmCoreHelper {
         // 3. 输出目录
         // 类型优先取 cache.type（TMDB 直查时已确定），其次取文件名解析结果
         String resolvedType = cache.type != null ? cache.type : safe(parsed.getMediaType());
-        String category  = cache.category != null ? cache.category : defaultCategory(resolvedType);
+        // 分类优先级：cache.category > 路径提取 > 默认分类
+        String pathCategory = extractCategoryFromPath(relFilePath);
+        String category = cache.category != null ? cache.category
+                        : (pathCategory != null ? pathCategory : defaultCategory(resolvedType));
         String dirName   = sanitizeDirName(
                 cache.dirName != null ? cache.dirName : buildFallbackDirName(parsed));
         String seasonDir = "";
@@ -540,11 +550,10 @@ public class StrmCoreHelper {
 
                 extractCredits(obj, cache);
 
-                // 构造输出目录名和分类
+                // 构造输出目录名（分类不在此处设置，由调用方结合路径信息决定）
                 if (cache.title != null) {
                     String yearStr = cache.year != null ? " (" + cache.year + ")" : "";
                     cache.dirName  = cache.title + yearStr;
-                    cache.category = defaultCategory(type);
                 }
                 log.debug("TMDB 直查成功: id={}, type={}, title={}", tmdbId, type, cache.title);
                 break;
@@ -1014,6 +1023,18 @@ public class StrmCoreHelper {
             return (parsed.getYear() != null) ? t + " (" + parsed.getYear() + ")" : t;
         }
         return "未知";
+    }
+
+    /**
+     * 从文件路径中提取第一级目录作为分类（如果是已知分类）
+     * 例如: "欧美剧集/铁证悬案-2003/Season 1/xxx.mp4" → "欧美剧集"
+     */
+    public String extractCategoryFromPath(String relFilePath) {
+        if (relFilePath == null || relFilePath.trim().isEmpty()) return null;
+        int firstSlash = relFilePath.indexOf('/');
+        if (firstSlash <= 0) return null;
+        String firstDir = relFilePath.substring(0, firstSlash).trim();
+        return VALID_CATEGORIES.contains(firstDir) ? firstDir : null;
     }
 
     public String defaultCategory(String mediaType) {

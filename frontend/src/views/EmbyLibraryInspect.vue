@@ -4,24 +4,10 @@
     <el-card class="toolbar-card">
       <div class="toolbar">
         <div class="toolbar-left">
-          <el-select
-            v-model="selectedAccountId"
-            placeholder="选择GD账号"
-            style="width: 200px"
-            @change="onAccountChange"
-          >
-            <el-option
-              v-for="acc in accounts"
-              :key="acc.id"
-              :label="acc.accountName"
-              :value="acc.id"
-            />
-          </el-select>
-
           <el-input
-            v-model="inspectPath"
-            placeholder="扫描路径（如 /video2）"
-            style="width: 260px; margin-left: 12px"
+            v-model="localPath"
+            placeholder="本地STRM根目录（如 /home/user/emby/video）"
+            style="width: 460px"
             clearable
             @keyup.enter="startInspect"
           />
@@ -235,7 +221,7 @@
 
     <!-- 初始状态 -->
     <el-card v-if="!inspected && !loading" class="welcome-card">
-      <el-empty description="选择GD账号和路径，点击「开始检查」扫描Emby库文件规范">
+      <el-empty description="输入本地STRM根目录，点击「开始检查」扫描Emby库文件规范">
         <template #image>
           <el-icon :size="60" color="#409eff"><Checked /></el-icon>
         </template>
@@ -251,13 +237,10 @@ import {
   Search, ArrowDown, ArrowUp, InfoFilled, Checked,
   Folder, FolderOpened, Film, Monitor, Document, VideoCamera, Collection
 } from '@element-plus/icons-vue'
-import { getAccountList } from '@/api/account'
 import { inspectLibrary } from '@/api/embyLibrary'
 
 // ── 状态 ──────────────────────────────────────────────────
-const accounts = ref([])
-const selectedAccountId = ref(null)
-const inspectPath = ref('/')
+const localPath = ref('')
 const loading = ref(false)
 const inspected = ref(false)
 
@@ -286,29 +269,10 @@ const treeProps = {
   isLeaf: (data) => !data.dir
 }
 
-// ── 初始化 ──────────────────────────────────────────────
-async function loadAccounts() {
-  try {
-    const res = await getAccountList()
-    accounts.value = res.data || []
-    if (accounts.value.length > 0 && !selectedAccountId.value) {
-      selectedAccountId.value = accounts.value[0].id
-    }
-  } catch (e) {
-    ElMessage.error('加载账号失败')
-  }
-}
-loadAccounts()
-
-function onAccountChange() {
-  // 切换账号后可手动重新检查
-}
-
 // ── 开始检查 ──────────────────────────────────────────────
 async function startInspect() {
-  const account = accounts.value.find(a => a.id === selectedAccountId.value)
-  if (!account) {
-    ElMessage.warning('请先选择GD账号')
+  if (!localPath.value || !localPath.value.trim()) {
+    ElMessage.warning('请输入本地STRM根目录')
     return
   }
 
@@ -316,7 +280,7 @@ async function startInspect() {
   inspected.value = false
 
   try {
-    const res = await inspectLibrary(account.rcloneConfigName, inspectPath.value || '/')
+    const res = await inspectLibrary(localPath.value.trim())
     rawTree.value = res.data || []
 
     // 统计

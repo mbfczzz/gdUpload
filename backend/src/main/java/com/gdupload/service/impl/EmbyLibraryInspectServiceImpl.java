@@ -1,21 +1,26 @@
 package com.gdupload.service.impl;
 
 import cn.hutool.core.util.StrUtil;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gdupload.dto.EmbyLibraryFileNode;
 import com.gdupload.dto.EmbyLibraryFileNode.Issue;
 import com.gdupload.dto.GdFileItem;
 import com.gdupload.service.IEmbyLibraryInspectService;
-import com.gdupload.util.RcloneUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Emby库检查服务实现
@@ -25,8 +30,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class EmbyLibraryInspectServiceImpl implements IEmbyLibraryInspectService {
 
-    private final RcloneUtil rcloneUtil;
-    private final ObjectMapper objectMapper;
+    private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     // ── 正则模式 ────────────────────────────────────────────────────
     private static final Pattern TMDBID_PATTERN = Pattern.compile("(?i)\\[tmdbid[=\\-](\\d+)]");
@@ -40,43 +44,42 @@ public class EmbyLibraryInspectServiceImpl implements IEmbyLibraryInspectService
     private static final Pattern SPECIAL_CHAR_PATTERN = Pattern.compile("[<>:\"|?*]");
     private static final Pattern EP_ONLY_PATTERN = Pattern.compile("(?i)E(\\d{1,4})(?!\\d)");
 
-    /** 已知的 Emby 媒体分类目录名 */
+    /** 已知的 Emby 媒体分类目录名（与归档/STRM功能保持一致） */
     private static final Set<String> KNOWN_CATEGORIES = new HashSet<>(Arrays.asList(
-            "日语动漫", "国产动漫", "韩国动漫", "欧美动漫",
-            "国产剧", "港台剧", "日剧", "韩剧", "欧美剧",
-            "华语电影", "日本电影", "韩国电影", "欧美电影",
-            "纪录片", "综艺", "动漫电影"
+            "动画电影", "动画剧集", "儿童剧集", "国产动漫", "国产剧集",
+            "日韩剧集", "华语电影", "纪录片", "欧美剧集", "外语电影",
+            "其他剧集", "综艺", "合集", "演唱会"
     ));
 
     /** 电影分类 */
     private static final Set<String> MOVIE_CATEGORIES = new HashSet<>(Arrays.asList(
-            "华语电影", "日本电影", "韩国电影", "欧美电影", "动漫电影"
+            "华语电影", "外语电影", "动画电影"
     ));
 
     // ── 公开方法 ────────────────────────────────────────────────────
 
     @Override
-    public List<EmbyLibraryFileNode> inspectLibrary(String rcloneRemote, String path) {
-        log.info("开始Emby库检查: remote={}, path={}", rcloneRemote, path);
+    public List<EmbyLibraryFileNode> inspectLibrary(String localPath) {
+        log.info("开始Emby库检查: localPath={}", localPath);
         long start = System.currentTimeMillis();
 
-        List<GdFileItem> topItems = listDirectory(rcloneRemote, path);
+        List<GdFileItem> topItems = listDirectory(localPath);
         List<EmbyLibraryFileNode> tree = new ArrayList<>();
 
         for (GdFileItem item : topItems) {
-            String fullPath = buildPath(path, item.getName());
-            EmbyLibraryFileNode node = buildNode(rcloneRemote, item, fullPath, 0, null);
+            String fullPath = buildPath(localPath, item.getName());
+            EmbyLibraryFileNode node = buildNode(item, fullPath, 0, null);
             tree.add(node);
         }
 
         long elapsed = System.currentTimeMillis() - start;
-        log.info("Emby库检查完成: remote={}, path={}, 耗时={}ms, 顶层节点={}", rcloneRemote, path, elapsed, tree.size());
+        log.info("Emby库检查完成: localPath={}, 耗时={}ms, 顶层节点={}", localPath, elapsed, tree.size());
         return tree;
     }
 
     @Override
-    public Map<String, Object> getInspectSummary(String rcloneRemote, String path) {
-        List<EmbyLibraryFileNode> tree = inspectLibrary(rcloneRemote, path);
+    public Map<String, Object> getInspectSummary(String localPath) {
+        List<EmbyLibraryFileNode> tree = inspectLibrary(localPath);
 
         int[] counts = new int[5]; // totalFiles, totalDirs, error, warning, info
         Map<String, Integer> categoryStats = new LinkedHashMap<>();
@@ -100,7 +103,7 @@ public class EmbyLibraryInspectServiceImpl implements IEmbyLibraryInspectService
      * @param depth         当前深度（0=分类层, 1=作品层, 2=Season层, 3=文件层）
      * @param parentCategory 父级分类名（用于判断是电影还是电视剧）
      */
-    private EmbyLibraryFileNode buildNode(String rcloneRemote, GdFileItem item,
+    private EmbyLibraryFileNode buildNode(GdFileItem item,
                                           String fullPath, int depth, String parentCategory) {
         EmbyLibraryFileNode node = new EmbyLibraryFileNode();
         node.setName(item.getName());
@@ -130,11 +133,11 @@ public class EmbyLibraryInspectServiceImpl implements IEmbyLibraryInspectService
             }
 
             // ── 递归子节点 ──
-            List<GdFileItem> children = listDirectory(rcloneRemote, fullPath);
+            List<GdFileItem> children = listDirectory(fullPath);
             List<EmbyLibraryFileNode> childNodes = new ArrayList<>();
             for (GdFileItem child : children) {
                 String childPath = buildPath(fullPath, child.getName());
-                EmbyLibraryFileNode childNode = buildNode(rcloneRemote, child, childPath, depth + 1, category);
+                EmbyLibraryFileNode childNode = buildNode(child, childPath, depth + 1, category);
                 childNodes.add(childNode);
             }
             node.setChildren(childNodes);
@@ -377,11 +380,35 @@ public class EmbyLibraryInspectServiceImpl implements IEmbyLibraryInspectService
 
     // ── 辅助方法 ──────────────────────────────────────────────────
 
-    /** 列出指定目录下的文件 */
-    private List<GdFileItem> listDirectory(String rcloneRemote, String path) {
+    /** 列出本地目录下的文件 */
+    private List<GdFileItem> listDirectory(String localPath) {
         try {
-            String json = rcloneUtil.listJson(rcloneRemote, path);
-            List<GdFileItem> items = objectMapper.readValue(json, new TypeReference<List<GdFileItem>>() {});
+            Path dir = Paths.get(localPath);
+            if (!Files.exists(dir) || !Files.isDirectory(dir)) {
+                log.warn("目录不存在或不是目录: {}", localPath);
+                return Collections.emptyList();
+            }
+
+            List<GdFileItem> items = new ArrayList<>();
+            try (Stream<Path> stream = Files.list(dir)) {
+                stream.forEach(path -> {
+                    try {
+                        BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class);
+
+                        GdFileItem item = new GdFileItem();
+                        item.setName(path.getFileName().toString());
+                        item.setIsDir(Files.isDirectory(path));
+                        item.setSize(attrs.size());
+                        item.setModTime(attrs.lastModifiedTime().toInstant()
+                                .atZone(ZoneId.systemDefault())
+                                .format(TIME_FORMATTER));
+                        items.add(item);
+                    } catch (Exception e) {
+                        log.warn("读取文件属性失败: {}, error={}", path, e.getMessage());
+                    }
+                });
+            }
+
             // 排序：目录在前，名称升序
             items.sort((a, b) -> {
                 boolean aDir = Boolean.TRUE.equals(a.getIsDir());
@@ -393,7 +420,7 @@ public class EmbyLibraryInspectServiceImpl implements IEmbyLibraryInspectService
             });
             return items;
         } catch (Exception e) {
-            log.error("列目录失败: remote={}, path={}, error={}", rcloneRemote, path, e.getMessage());
+            log.error("列目录失败: localPath={}, error={}", localPath, e.getMessage());
             return Collections.emptyList();
         }
     }

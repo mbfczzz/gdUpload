@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.annotation.*;
 import lombok.Data;
 
 import java.io.Serializable;
+import java.math.BigInteger;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 
 /**
@@ -26,6 +28,9 @@ public class StrmFileRecord implements Serializable {
 
     /** GD 文件相对路径 */
     private String relFilePath;
+
+    /** 路径MD5哈希（唯一键用，避免长路径前缀冲突） */
+    private String pathHash;
 
     /** rclone 返回的修改时间（变更检测用） */
     private String fileModTime;
@@ -54,4 +59,23 @@ public class StrmFileRecord implements Serializable {
 
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updateTime;
+
+    /**
+     * 根据 watchConfigId + relFilePath 计算 pathHash
+     */
+    public void computePathHash() {
+        if (watchConfigId != null && relFilePath != null) {
+            this.pathHash = md5(watchConfigId + ":" + relFilePath);
+        }
+    }
+
+    private static String md5(String input) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            byte[] digest = md.digest(input.getBytes("UTF-8"));
+            return String.format("%032x", new BigInteger(1, digest));
+        } catch (Exception e) {
+            throw new RuntimeException("MD5计算失败", e);
+        }
+    }
 }

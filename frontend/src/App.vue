@@ -129,6 +129,7 @@ const currentPageTitle = computed(() => {
     '/log': '日志查看',
     '/subscribe-search': '订阅搜索',
     '/emby': 'Emby管理',
+    '/emby-library': 'Emby库检查',
     '/emby-config': 'Emby配置',
     '/smart-search-config': '智能搜索配置',
     '/resource115': '115资源管理',

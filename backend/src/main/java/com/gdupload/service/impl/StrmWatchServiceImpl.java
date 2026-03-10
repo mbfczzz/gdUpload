@@ -305,6 +305,7 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
                         record.setWatchConfigId(configId);
                         record.setGdRemote(config.getGdRemote());
                         record.setRelFilePath(relPath);
+                        record.computePathHash();
                         record.setFileModTime(mtime);
                         record.setStrmLocalPath(result.strmLocalPath);
                         record.setNfoLocalPath(result.nfoLocalPath);
@@ -339,6 +340,7 @@ public class StrmWatchServiceImpl implements IStrmWatchService {
                         record.setWatchConfigId(configId);
                         record.setGdRemote(config.getGdRemote());
                         record.setRelFilePath(relPath);
+                        record.computePathHash();
                         record.setFileModTime(mtime);
                         record.setStatus("failed");
                         record.setFailReason(ex.getMessage() != null

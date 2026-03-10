@@ -20,13 +20,12 @@ public class EmbyLibraryInspectController {
     private final IEmbyLibraryInspectService inspectService;
 
     /**
-     * 扫描指定路径并返回文件树 + 验证结果
+     * 扫描本地STRM目录并返回文件树 + 验证结果
      */
     @GetMapping("/inspect")
     public Result<List<EmbyLibraryFileNode>> inspect(
-            @RequestParam String rcloneRemote,
-            @RequestParam(defaultValue = "/") String path) {
-        List<EmbyLibraryFileNode> tree = inspectService.inspectLibrary(rcloneRemote, path);
+            @RequestParam String localPath) {
+        List<EmbyLibraryFileNode> tree = inspectService.inspectLibrary(localPath);
         return Result.success(tree);
     }
 
@@ -35,9 +34,8 @@ public class EmbyLibraryInspectController {
      */
     @GetMapping("/summary")
     public Result<Map<String, Object>> summary(
-            @RequestParam String rcloneRemote,
-            @RequestParam(defaultValue = "/") String path) {
-        Map<String, Object> result = inspectService.getInspectSummary(rcloneRemote, path);
+            @RequestParam String localPath) {
+        Map<String, Object> result = inspectService.getInspectSummary(localPath);
         return Result.success(result);
     }
 }
