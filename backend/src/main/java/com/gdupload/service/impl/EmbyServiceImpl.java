@@ -77,9 +77,6 @@ public class EmbyServiceImpl implements IEmbyService {
     @Autowired
     private RcloneUtil rcloneUtil;
 
-    @Autowired
-    private IArchiveService archiveService;
-
     @Value("${app.emby.download-dir:/data/emby}")
     private String defaultEmbyDownloadDir;
 
@@ -2162,15 +2159,6 @@ public class EmbyServiceImpl implements IEmbyService {
                                     }
                                     log.info("[{}/{}] 共 {} 集，开始交错下载上传", index + 1, itemIds.size(), episodes.size());
 
-                                    // 构建系列文件名前缀
-                                    String seriesName = item.getName() != null ? item.getName() : "unknown_series";
-                                    String seriesPrefix = seriesName;
-                                    if (item.getProductionYear() != null) seriesPrefix += " (" + item.getProductionYear() + ")";
-                                    String tmdbIdStr = extractTmdbId(item);
-                                    if (tmdbIdStr != null) seriesPrefix += " [tmdbid=" + tmdbIdStr + "]";
-                                    seriesPrefix = seriesPrefix.replaceAll("[\\\\/:*?\"<>|]", "_");
-                                    log.info("[{}/{}] 系列文件名前缀: {}", index + 1, itemIds.size(), seriesPrefix);
-
                                     String base = gdTargetPath.endsWith("/") ? gdTargetPath : gdTargetPath + "/";
                                     int epSuccess = 0;
 
@@ -2199,18 +2187,14 @@ public class EmbyServiceImpl implements IEmbyService {
                                             }
                                         }
 
-                                        // 构建平铺文件名
+                                        // 从 episode.getPath() 提取原始文件名
                                         String ext = getMediaExtension(episode);
-                                        String episodePart;
-                                        if (episode.getParentIndexNumber() != null && episode.getIndexNumber() != null) {
-                                            String epTitle = episode.getName() != null ? " " + episode.getName() : "";
-                                            episodePart = String.format(" S%02dE%02d%s", episode.getParentIndexNumber(), episode.getIndexNumber(), epTitle);
-                                        } else if (episode.getIndexNumber() != null) {
-                                            episodePart = String.format(" E%02d", episode.getIndexNumber());
-                                        } else {
-                                            episodePart = episode.getName() != null ? " " + episode.getName() : "";
+                                        String flatFilename = extractEpisodeFilenameFromPath(episode, ext);
+                                        if (flatFilename == null || flatFilename.trim().isEmpty()) {
+                                            // 降级：用集名
+                                            flatFilename = (episode.getName() != null ? episode.getName() : "unknown")
+                                                    .replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
                                         }
-                                        String flatFilename = (seriesPrefix + episodePart).replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
 
                                         // 下载单集后立即上传
                                         try {
@@ -2228,53 +2212,9 @@ public class EmbyServiceImpl implements IEmbyService {
                                             fileInfoService.updateFileStatus(currentFile.getId(), 1,
                                                 String.format("上传 %d/%d", ei + 1, episodes.size()));
 
-                                            // ═══ 上传前补充编码信息到文件名 ═══
-                                            String finalFilename = flatFilename;
-                                            String finalFilePath = filePath;
-                                            try {
-                                                log.info("[{}/{}] [{}/{}集] 开始 ffprobe 探测: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), flatFilename);
-                                                MediaInfoDto mediaInfo = archiveService.getMediaInfo(filePath, null);
-                                                log.info("[{}/{}] [{}/{}集] ffprobe 结果: {}, videoCodec={}, resolution={}, audioCodec={}",
-                                                    index + 1, itemIds.size(), ei + 1, episodes.size(),
-                                                    mediaInfo != null ? "成功" : "失败",
-                                                    mediaInfo != null ? mediaInfo.getVideoCodec() : null,
-                                                    mediaInfo != null ? mediaInfo.getResolution() : null,
-                                                    mediaInfo != null ? mediaInfo.getAudioCodec() : null);
-                                                if (mediaInfo != null && (mediaInfo.getVideoCodec() != null || mediaInfo.getResolution() != null)) {
-                                                    // 构建带编码信息的文件名
-                                                    StringBuilder newName = new StringBuilder();
-                                                    int extIdx = flatFilename.lastIndexOf('.');
-                                                    String nameWithoutExt = extIdx > 0 ? flatFilename.substring(0, extIdx) : flatFilename;
-                                                    String extension = extIdx > 0 ? flatFilename.substring(extIdx) : "";
-
-                                                    newName.append(nameWithoutExt);
-                                                    if (mediaInfo.getResolution() != null) newName.append(" ").append(mediaInfo.getResolution());
-
-                                                    java.util.List<String> codecs = new java.util.ArrayList<>();
-                                                    if (mediaInfo.getVideoCodec() != null) codecs.add(mediaInfo.getVideoCodec());
-                                                    if (mediaInfo.getAudioCodec() != null) codecs.add(mediaInfo.getAudioCodec());
-                                                    if (!codecs.isEmpty()) newName.append(".").append(String.join(".", codecs));
-
-                                                    newName.append(extension);
-                                                    String formattedName = newName.toString();
-
-                                                    if (!formattedName.equals(flatFilename)) {
-                                                        java.nio.file.Path oldPath = java.nio.file.Paths.get(filePath);
-                                                        java.nio.file.Path newPath = oldPath.getParent().resolve(formattedName);
-                                                        java.nio.file.Files.move(oldPath, newPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                                                        finalFilename = formattedName;
-                                                        finalFilePath = newPath.toString();
-                                                        log.info("[{}/{}] [{}/{}集] 文件已格式化: {} → {}", index + 1, itemIds.size(), ei + 1, episodes.size(), flatFilename, formattedName);
-                                                    }
-                                                }
-                                            } catch (Exception e) {
-                                                log.warn("[{}/{}] [{}/{}集] 格式化失败，使用原文件名: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), e.getMessage());
-                                            }
-                                            // ═══════════════════════════════════
-
-                                            String remoteFilePath = base + finalFilename;
+                                            String remoteFilePath = base + flatFilename;
                                             RcloneResult uploadResult = rcloneUtil.uploadSingleFileTo(
-                                                finalFilePath, account.getRcloneConfigName(), remoteFilePath,
+                                                filePath, account.getRcloneConfigName(), remoteFilePath,
                                                 line -> log.debug("rclone: {}", line));
                                             if (uploadResult.isSuccess()) {
                                                 epSuccess++;
@@ -2303,36 +2243,13 @@ public class EmbyServiceImpl implements IEmbyService {
                                     fileInfoService.updateFileStatus(currentFile.getId(), 1, "正在下载");
                                     webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, "正在下载");
 
-                                    // 如果是单集(Episode)，构建含tmdbid的文件名（与批量直接下载保持一致）
+                                    // 从 item.getPath() 提取原始文件名
                                     String filenameOverride = null;
-                                    if ("Episode".equals(item.getType())) {
-                                        String seriesId = item.getSeriesId();
-                                        if (seriesId != null && !seriesId.isEmpty()) {
-                                            try {
-                                                EmbyItem series = getItemDetail(seriesId);
-                                                if (series != null) {
-                                                    String sName = series.getName() != null ? series.getName() : "unknown_series";
-                                                    if (series.getProductionYear() != null) sName += " (" + series.getProductionYear() + ")";
-                                                    String tmdbId = extractTmdbId(series);
-                                                    if (tmdbId != null) sName += " [tmdbid=" + tmdbId + "]";
-                                                    String prefix = sName.replaceAll("[\\\\/:*?\"<>|]", "_");
-
-                                                    String ext = getMediaExtension(item);
-                                                    String episodePart;
-                                                    if (item.getParentIndexNumber() != null && item.getIndexNumber() != null) {
-                                                        String epTitle = item.getName() != null ? " " + item.getName() : "";
-                                                        episodePart = String.format(" S%02dE%02d%s", item.getParentIndexNumber(), item.getIndexNumber(), epTitle);
-                                                    } else if (item.getIndexNumber() != null) {
-                                                        episodePart = String.format(" E%02d", item.getIndexNumber());
-                                                    } else {
-                                                        episodePart = item.getName() != null ? " " + item.getName() : "";
-                                                    }
-                                                    filenameOverride = (prefix + episodePart).replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
-                                                    log.info("[{}/{}] Episode含tmdbid文件名: {}", index + 1, itemIds.size(), filenameOverride);
-                                                }
-                                            } catch (Exception e) {
-                                                log.warn("[{}/{}] 获取Episode父级Series信息失败，使用默认文件名: {}", index + 1, itemIds.size(), e.getMessage());
-                                            }
+                                    if (item.getPath() != null && !item.getPath().isEmpty()) {
+                                        String ext = getMediaExtension(item);
+                                        filenameOverride = extractEpisodeFilenameFromPath(item, ext);
+                                        if (filenameOverride != null) {
+                                            log.info("[{}/{}] 使用原始文件名: {}", index + 1, itemIds.size(), filenameOverride);
                                         }
                                     }
 
