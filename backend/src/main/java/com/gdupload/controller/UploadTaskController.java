@@ -98,27 +98,6 @@ public class UploadTaskController {
     @PutMapping("/{id}/start")
     public Result<Void> start(@PathVariable Long id) {
         UploadTask task = uploadTaskService.getTaskDetail(id);
-        if (task != null && task.getTaskType() != null && task.getTaskType() == 3) {
-            // Emby下载任务：重新启动（会自动跳过已下载的文件）
-            // 仅允许从待开始(0)、已暂停(3)、失败(5)状态启动，不允许从运行中(1)或暂停中(6)启动
-            if (task.getStatus() == 1 || task.getStatus() == 6) {
-                return Result.error("任务正在运行或暂停中，无法重新启动");
-            }
-            try {
-                // 获取任务的文件列表（itemIds）
-                List<FileInfo> fileList = fileInfoService.getTaskFiles(id);
-                List<String> itemIds = fileList.stream()
-                    .map(FileInfo::getFilePath)  // filePath存储的是embyItemId
-                    .collect(java.util.stream.Collectors.toList());
-
-                // 重新启动下载任务（会自动跳过已下载的文件）
-                embyService.batchDownloadToServerAsync(itemIds, id);
-                return Result.success("下载任务已重新启动（会自动跳过已下载的文件）");
-            } catch (Exception e) {
-                log.error("重新启动Emby下载任务失败: taskId={}", id, e);
-                return Result.error("启动失败: " + e.getMessage());
-            }
-        }
         boolean success = uploadTaskService.startTask(id);
 
         if (success) {
@@ -133,9 +112,8 @@ public class UploadTaskController {
     @PutMapping("/{id}/pause")
     public Result<Void> pause(@PathVariable Long id) {
         UploadTask task = uploadTaskService.getTaskDetail(id);
-        if (task != null && task.getTaskType() != null
-                && (task.getTaskType() == 3 || task.getTaskType() == 5)) {
-            // Emby下载任务 / Emby下载上传任务
+        if (task != null && task.getTaskType() != null && task.getTaskType() == 5) {
+            // Emby下载上传任务
             boolean success = embyService.pauseDownloadTask(id);
             return success ? Result.success("暂停中，等待工作线程结束...") : Result.error("暂停失败");
         }
@@ -146,27 +124,13 @@ public class UploadTaskController {
     @PutMapping("/{id}/resume")
     public Result<Void> resume(@PathVariable Long id) {
         UploadTask task = uploadTaskService.getTaskDetail(id);
-        if (task != null && task.getTaskType() != null
-                && (task.getTaskType() == 3 || task.getTaskType() == 5)) {
-            // Emby下载任务 / Emby下载上传任务：仅允许从已暂停(3)状态恢复
+        if (task != null && task.getTaskType() != null && task.getTaskType() == 5) {
+            // Emby下载上传任务：仅允许从已暂停(3)状态恢复
             // 暂停中(6)时工作线程尚未全部退出，恢复会导致新旧线程并行的竞态条件
             if (task.getStatus() != 3) {
                 return Result.error("任务尚未完全暂停，请等待暂停完成后再恢复");
             }
-            try {
-                // 从FileInfo表中获取所有文件的itemId（存储在filePath字段）
-                List<FileInfo> fileInfoList = fileInfoService.getTaskFiles(id);
-                List<String> itemIds = fileInfoList.stream()
-                    .map(FileInfo::getFilePath)
-                    .collect(java.util.stream.Collectors.toList());
-
-                // 调用断点续传方法（传入existingTaskId）
-                embyService.batchDownloadToServerAsync(itemIds, id);
-                return Result.success("Emby下载任务已恢复（会自动跳过已下载的文件）");
-            } catch (Exception e) {
-                log.error("恢复Emby下载任务失败: taskId={}", id, e);
-                return Result.error("恢复失败: " + e.getMessage());
-            }
+            // taskType=5 的恢复逻辑由 uploadService.executeTask 处理
         }
         boolean success = uploadTaskService.resumeTask(id);
 
@@ -181,9 +145,8 @@ public class UploadTaskController {
     @PutMapping("/{id}/cancel")
     public Result<Void> cancel(@PathVariable Long id) {
         UploadTask task = uploadTaskService.getTaskDetail(id);
-        if (task != null && task.getTaskType() != null
-                && (task.getTaskType() == 3 || task.getTaskType() == 5)) {
-            // Emby下载任务 / Emby下载上传任务
+        if (task != null && task.getTaskType() != null && task.getTaskType() == 5) {
+            // Emby下载上传任务
             boolean success = embyService.cancelDownloadTask(id);
             return success ? Result.success("任务已取消") : Result.error("取消失败");
         }

@@ -174,33 +174,12 @@ export function downloadToServer(itemId) {
 }
 
 /**
- * 批量下载媒体项到服务器（后端队列执行）
- */
-export function batchDownloadToServer(itemIds) {
-  return request({
-    url: '/emby/batch-download-to-server',
-    method: 'post',
-    data: itemIds
-  })
-}
-
-/**
- * 获取批量下载进度
- */
-export function getBatchDownloadProgress() {
-  return request({
-    url: '/emby/batch-download-progress',
-    method: 'get'
-  })
-}
-
-/**
  * 批量下载并上传媒体项到服务器（后端队列执行）
  */
-export function batchDownloadAndUpload(itemIds) {
+export function batchDownloadAndUpload(params) {
   return request({
     url: '/emby/batch-download-and-upload',
     method: 'post',
-    data: itemIds
+    data: params
   })
 }

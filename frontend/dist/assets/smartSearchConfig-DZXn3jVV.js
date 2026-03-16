@@ -1,1 +1,0 @@
-import{r}from"./request-CIezAw0r.js";function o(){return r({url:"/smart-search-config/full",method:"get"})}function s(t){return r({url:"/smart-search-config/full",method:"post",data:t})}export{o as g,s};

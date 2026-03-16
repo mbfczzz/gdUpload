@@ -309,45 +309,24 @@ public class EmbyController {
     }
 
     /**
-     * 批量下载Emby媒体项到服务器本地（后端队列执行）
-     * 所有下载任务在后端依次执行，不依赖前端保持连接
-     *
-     * @param itemIds 媒体项ID列表
-     * @return 批量下载任务启动结果
-     */
-    @PostMapping("/batch-download-to-server")
-    public Result<Map<String, Object>> batchDownloadToServer(@RequestBody List<String> itemIds) {
-        log.info("批量下载媒体项到服务器，共 {} 个", itemIds.size());
-        try {
-            // 启动后端批量下载任务，返回taskId
-            Long taskId = embyService.batchDownloadToServerAsync(itemIds);
-
-            Map<String, Object> result = new HashMap<>();
-            result.put("status", "started");
-            result.put("message", "批量下载任务已启动，共 " + itemIds.size() + " 个媒体项");
-            result.put("totalCount", itemIds.size());
-            result.put("taskId", taskId);
-
-            return Result.success(result);
-        } catch (Exception e) {
-            log.error("启动批量下载任务失败", e);
-            return Result.error("启动批量下载失败: " + e.getMessage());
-        }
-    }
-
-    /**
      * 批量下载并上传Emby媒体项（后端队列执行）
      * 下载一个剧集后立即上传，然后处理下一个
      *
-     * @param itemIds 媒体项ID列表
+     * @param request 包含itemIds、uploadDir、gdTargetPath的请求
      * @return 批量下载上传任务启动结果
      */
     @PostMapping("/batch-download-and-upload")
-    public Result<Map<String, Object>> batchDownloadAndUpload(@RequestBody List<String> itemIds) {
-        log.info("批量下载并上传媒体项，共 {} 个", itemIds.size());
+    public Result<Map<String, Object>> batchDownloadAndUpload(@RequestBody Map<String, Object> request) {
+        @SuppressWarnings("unchecked")
+        List<String> itemIds = (List<String>) request.get("itemIds");
+        String uploadDir = (String) request.get("uploadDir");
+        String gdTargetPath = (String) request.get("gdTargetPath");
+
+        log.info("批量下载并上传媒体项，共 {} 个, uploadDir={}, gdTargetPath={}",
+                itemIds.size(), uploadDir, gdTargetPath);
         try {
             // 启动后端批量下载上传任务，返回taskId
-            Long taskId = embyService.batchDownloadAndUploadAsync(itemIds);
+            Long taskId = embyService.batchDownloadAndUploadAsync(itemIds, uploadDir, gdTargetPath);
 
             Map<String, Object> result = new HashMap<>();
             result.put("status", "started");
@@ -362,14 +341,4 @@ public class EmbyController {
         }
     }
 
-    /**
-     * 获取批量下载进度
-     *
-     * @return 当前批量下载的进度信息
-     */
-    @GetMapping("/batch-download-progress")
-    public Result<Map<String, Object>> getBatchDownloadProgress() {
-        Map<String, Object> progress = embyService.getBatchDownloadProgress();
-        return Result.success(progress);
-    }
 }

@@ -11,11 +11,9 @@ import cn.hutool.json.JSONUtil;
 import com.gdupload.common.BusinessException;
 import com.gdupload.config.EmbyProperties;
 import com.gdupload.dto.*;
-import com.gdupload.entity.EmbyConfig;
-import com.gdupload.entity.EmbyDownloadHistory;
-import com.gdupload.entity.FileInfo;
-import com.gdupload.entity.GdAccount;
+import com.gdupload.entity.*;
 import com.gdupload.mapper.EmbyDownloadHistoryMapper;
+import com.gdupload.mapper.UploadRecordMapper;
 import com.gdupload.service.*;
 import com.gdupload.util.DateTimeUtil;
 import com.gdupload.util.RcloneResult;
@@ -52,6 +50,9 @@ public class EmbyServiceImpl implements IEmbyService {
 
     @Autowired
     private EmbyDownloadHistoryMapper downloadHistoryMapper;
+
+    @Autowired
+    private UploadRecordMapper uploadRecordMapper;
 
     @Autowired
     private IEmbyConfigService embyConfigService;
@@ -1586,339 +1587,6 @@ public class EmbyServiceImpl implements IEmbyService {
         log.info("异步下载任务已启动，线程名: Emby-Download-{}", itemId);
     }
 
-    // 批量下载进度信息
-    private volatile Map<String, Object> batchDownloadProgress = new ConcurrentHashMap<>();
-
-    @Override
-    public Long batchDownloadToServerAsync(List<String> itemIds) {
-        return batchDownloadToServerAsync(itemIds, null);
-    }
-
-    /**
-     * 批量下载到服务器（异步，支持断点续传）
-     *
-     * @param itemIds 媒体项ID列表
-     * @param existingTaskId 已存在的任务ID（用于恢复任务），如果为null则创建新任务
-     * @return 任务ID
-     */
-    public Long batchDownloadToServerAsync(List<String> itemIds, Long existingTaskId) {
-        Long taskId;
-        List<FileInfo> fileInfoList;
-
-        if (existingTaskId != null) {
-            // 恢复已存在的任务
-            taskId = existingTaskId;
-            fileInfoList = fileInfoService.getTaskFiles(taskId);
-            log.info("恢复Emby下载任务: taskId={}, 共 {} 个媒体项", taskId, fileInfoList.size());
-
-            // 更新任务状态为运行中
-            uploadTaskService.updateTaskStatus(taskId, 1, null);
-        } else {
-            // 创建新任务
-            // 1. 收集媒体项名称，用于自动生成任务名
-            List<String> itemNames = new ArrayList<>();
-            for (String itemId : itemIds) {
-                try {
-                    EmbyItem detail = getItemDetail(itemId);
-                    if (detail != null && detail.getName() != null) {
-                        itemNames.add(detail.getName());
-                    }
-                } catch (Exception e) {
-                    // 获取名称失败不影响
-                }
-            }
-
-            // 自动生成任务名
-            String taskName;
-            if (itemNames.size() == 1) {
-                taskName = "Emby下载 - " + itemNames.get(0);
-            } else if (itemNames.size() <= 3) {
-                taskName = "Emby下载 - " + String.join(", ", itemNames);
-            } else {
-                taskName = "Emby下载 - " + itemNames.get(0) + " 等" + itemIds.size() + "个媒体项";
-            }
-            // 截断过长的任务名
-            if (taskName.length() > 200) {
-                taskName = taskName.substring(0, 197) + "...";
-            }
-
-            // 2. 创建 UploadTask（taskType=3）
-            taskId = uploadTaskService.createDownloadTask(taskName, getEmbyDownloadDir(), itemIds.size());
-            if (taskId == null) {
-                throw new BusinessException("创建下载任务失败");
-            }
-
-            // 3. 为每个 itemId 创建 FileInfo 行
-            fileInfoList = new ArrayList<>();
-            for (int i = 0; i < itemIds.size(); i++) {
-                FileInfo fileInfo = new FileInfo();
-                fileInfo.setTaskId(taskId);
-                String name = i < itemNames.size() ? itemNames.get(i) : ("媒体项 " + itemIds.get(i));
-                fileInfo.setFileName(name);
-                fileInfo.setFilePath(itemIds.get(i)); // 存embyItemId
-                fileInfo.setFileSize(0L);
-                fileInfo.setStatus(0); // 待下载
-                fileInfo.setCreateTime(DateTimeUtil.now());
-                fileInfoList.add(fileInfo);
-            }
-            fileInfoService.batchSaveFiles(taskId, fileInfoList);
-        }
-
-        // 4. 初始化进度信息（兼容旧的轮询接口）
-        batchDownloadProgress.put("running", true);
-        batchDownloadProgress.put("totalCount", fileInfoList.size());
-        batchDownloadProgress.put("completedCount", 0);
-        batchDownloadProgress.put("successCount", 0);
-        batchDownloadProgress.put("failedCount", 0);
-        batchDownloadProgress.put("skippedCount", 0);
-        batchDownloadProgress.put("currentItemId", "");
-        batchDownloadProgress.put("currentItemName", "");
-        batchDownloadProgress.put("taskId", taskId);
-
-        // 5. 设置停止标志
-        AtomicBoolean stopFlag = new AtomicBoolean(false);
-        downloadStopFlags.put(taskId, stopFlag);
-
-        // 6. 启动下载管理线程（5个并发下载）
-        final Long finalTaskId = taskId;
-        final int CONCURRENT_DOWNLOADS = 5;
-
-        // ── 注册到 TaskPauseManager ──
-        TaskPauseManager.register(finalTaskId, itemIds.size());
-
-        new Thread(() -> {
-            AtomicInteger successCount = new AtomicInteger(0);
-            AtomicInteger failedCount = new AtomicInteger(0);
-            AtomicInteger skippedCount = new AtomicInteger(0);
-
-            log.info("========================================");
-            log.info("批量下载任务开始: taskId={}, 共 {} 个媒体项, 并发数: {}", finalTaskId, fileInfoList.size(), CONCURRENT_DOWNLOADS);
-            log.info("========================================");
-
-            ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT_DOWNLOADS);
-
-            CountDownLatch latch = new CountDownLatch(itemIds.size());
-
-            try {
-                for (int i = 0; i < itemIds.size(); i++) {
-                    // 检查停止标志
-                    if (stopFlag.get()) {
-                        log.info("下载任务被停止: taskId={}", finalTaskId);
-                        // 剩余的直接countdown + onThreadFinished（保持 activeThreads 计数一致）
-                        for (int j = i; j < itemIds.size(); j++) {
-                            latch.countDown();
-                            TaskPauseManager.onThreadFinished(finalTaskId);
-                        }
-                        break;
-                    }
-
-                    final int index = i;
-                    final String itemId = itemIds.get(i);
-                    final FileInfo currentFile = fileInfoList.get(i);
-
-                    executor.submit(() -> {
-                        try {
-                            if (stopFlag.get()) {
-                                return;
-                            }
-
-                            // 先检查是否已下载
-                            com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<EmbyDownloadHistory> wrapper =
-                                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<>();
-                            wrapper.eq(EmbyDownloadHistory::getEmbyItemId, itemId)
-                                    .eq(EmbyDownloadHistory::getDownloadStatus, "success")
-                                    .last("LIMIT 1");
-                            EmbyDownloadHistory existing = downloadHistoryMapper.selectOne(wrapper);
-
-                            if (existing != null) {
-                                log.info("[{}/{}] 跳过已下载: itemId={}", index + 1, itemIds.size(), itemId);
-                                skippedCount.incrementAndGet();
-                                batchDownloadProgress.put("skippedCount", skippedCount.get());
-                                fileInfoService.updateFileStatus(currentFile.getId(), 4, "已下载，跳过");
-                                webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 4, "已下载，跳过");
-                                return;
-                            }
-
-                            log.info("[{}/{}] 开始下载: itemId={}", index + 1, itemIds.size(), itemId);
-
-                            // 再次检查停止标志（在实际下载前）
-                            if (stopFlag.get()) {
-                                log.info("[{}/{}] 任务已暂停，跳过下载: itemId={}", index + 1, itemIds.size(), itemId);
-                                return;
-                            }
-
-                            // 更新FileInfo状态为下载中(1)
-                            fileInfoService.updateFileStatus(currentFile.getId(), 1, null);
-                            webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 1, null);
-
-                            batchDownloadProgress.put("currentItemName", currentFile.getFileName());
-
-                            Map<String, Object> result = downloadToServer(itemId);
-
-                            // 下载完成后再次检查停止标志
-                            if (stopFlag.get()) {
-                                log.info("[{}/{}] 任务已暂停，不更新下载结果: itemId={}", index + 1, itemIds.size(), itemId);
-                                return;
-                            }
-
-                            boolean downloadOk;
-                            if ("series".equals(result.get("type"))) {
-                                Integer seriesSuccess = (Integer) result.get("successCount");
-                                downloadOk = seriesSuccess != null && seriesSuccess > 0;
-                            } else {
-                                downloadOk = Boolean.TRUE.equals(result.get("success"));
-                            }
-
-                            if (downloadOk) {
-                                successCount.incrementAndGet();
-                                log.info("[{}/{}] 下载成功: itemId={}", index + 1, itemIds.size(), itemId);
-
-                                // 更新FileInfo：设置实际下载的文件路径、文件名和相对路径
-                                log.info("准备更新FileInfo: fileInfoId={}, result包含的key={}",
-                                    currentFile.getId(), result.keySet());
-                                updateFileInfoAfterDownload(currentFile, result);
-
-                                fileInfoService.updateFileStatus(currentFile.getId(), 2, null);
-                                webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 2, null);
-                            } else {
-                                failedCount.incrementAndGet();
-                                log.warn("[{}/{}] 下载失败: itemId={}", index + 1, itemIds.size(), itemId);
-                                fileInfoService.updateFileStatus(currentFile.getId(), 3, "下载失败");
-                                webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 3, "下载失败");
-                            }
-                        } catch (Exception e) {
-                            failedCount.incrementAndGet();
-                            log.error("[{}/{}] 下载异常: itemId={}, error={}", index + 1, itemIds.size(), itemId, e.getMessage());
-                            fileInfoService.updateFileStatus(currentFile.getId(), 3, e.getMessage());
-                            webSocketService.pushFileStatus(finalTaskId, currentFile.getId(), currentFile.getFileName(), 3, e.getMessage());
-                        } finally {
-                            latch.countDown();
-                            TaskPauseManager.onThreadFinished(finalTaskId);
-
-                            // 更新进度
-                            batchDownloadProgress.put("successCount", successCount.get());
-                            batchDownloadProgress.put("failedCount", failedCount.get());
-
-                            int completed = successCount.get() + failedCount.get() + skippedCount.get();
-                            batchDownloadProgress.put("completedCount", completed);
-                            int taskProgress = (int) ((completed * 100L) / itemIds.size());
-
-                            uploadTaskService.updateTaskProgress(finalTaskId, completed, 0L, taskProgress);
-                            webSocketService.pushTaskProgress(finalTaskId, taskProgress,
-                                completed, itemIds.size(), 0L, 0L,
-                                batchDownloadProgress.getOrDefault("currentItemName", "").toString());
-
-                            // 更新失败数
-                            com.gdupload.entity.UploadTask taskEntity = uploadTaskService.getTaskDetail(finalTaskId);
-                            if (taskEntity != null) {
-                                taskEntity.setFailedCount(failedCount.get());
-                                uploadTaskService.updateById(taskEntity);
-                            }
-                        }
-                    });
-                }
-
-                // 等待所有下载完成
-                latch.await();
-
-                // 更新最终进度
-                batchDownloadProgress.put("completedCount", itemIds.size());
-                batchDownloadProgress.put("running", false);
-
-                int finalSuccess = successCount.get();
-                int finalFailed = failedCount.get();
-                int finalSkipped = skippedCount.get();
-
-                // 更新任务最终状态
-                if (stopFlag.get()) {
-                    log.info("下载任务已停止: taskId={}", finalTaskId);
-                } else if (finalFailed == 0) {
-                    uploadTaskService.updateTaskStatus(finalTaskId, 2, null);
-                    webSocketService.pushTaskStatus(finalTaskId, 2, "下载完成");
-                } else {
-                    uploadTaskService.updateTaskStatus(finalTaskId, 2,
-                        String.format("完成（成功%d，失败%d，跳过%d）", finalSuccess, finalFailed, finalSkipped));
-                    webSocketService.pushTaskStatus(finalTaskId, 2, "下载完成（部分失败）");
-                }
-
-                // 确保最终进度为100%
-                uploadTaskService.updateTaskProgress(finalTaskId,
-                    finalSuccess + finalFailed + finalSkipped, 0L, 100);
-
-                log.info("========================================");
-                log.info("批量下载任务完成: taskId={}, 成功: {}, 失败: {}, 跳过: {}",
-                    finalTaskId, finalSuccess, finalFailed, finalSkipped);
-                log.info("========================================");
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                log.error("批量下载管理线程被中断: taskId={}", finalTaskId);
-            } finally {
-                executor.shutdownNow();
-                downloadStopFlags.remove(finalTaskId);
-                TaskPauseManager.unregister(finalTaskId);
-            }
-        }, "Emby-BatchDownload-" + taskId).start();
-
-        log.info("批量下载任务已启动: taskId={}, 共 {} 个媒体项", taskId, itemIds.size());
-        return taskId;
-    }
-
-    @Override
-    public Map<String, Object> getBatchDownloadProgress() {
-        if (batchDownloadProgress.isEmpty()) {
-            Map<String, Object> empty = new HashMap<>();
-            empty.put("running", false);
-            return empty;
-        }
-        return new HashMap<>(batchDownloadProgress);
-    }
-
-    @Override
-    public boolean pauseDownloadTask(Long taskId) {
-        AtomicBoolean stopFlag = downloadStopFlags.get(taskId);
-        if (stopFlag != null) {
-            stopFlag.set(true);
-            uploadTaskService.updateTaskStatus(taskId, 6, null); // 6=暂停中
-            webSocketService.pushTaskStatus(taskId, 6, "暂停中...");
-
-            // 通过 TaskPauseManager 等待所有线程结束后再变为已暂停
-            TaskPauseManager.requestPause(taskId, id -> {
-                uploadTaskService.completePause(id);
-                webSocketService.pushTaskStatus(id, 3, "下载已暂停");
-                log.info("下载任务暂停完成（所有线程已结束）: taskId={}", id);
-            });
-
-            log.info("暂停下载任务（暂停中）: taskId={}", taskId);
-            return true;
-        }
-        // 任务不在运行中，直接更新数据库状态
-        return uploadTaskService.pauseTask(taskId);
-    }
-
-    @Override
-    public boolean cancelDownloadTask(Long taskId) {
-        AtomicBoolean stopFlag = downloadStopFlags.get(taskId);
-        if (stopFlag != null) {
-            stopFlag.set(true);
-
-            // 先覆盖可能存在的暂停回调（必须在设置DB状态之前），
-            // 防止暂停回调在 requestCancel 和 updateTaskStatus 之间的窗口触发，
-            // 把状态从 4 改回 3
-            TaskPauseManager.requestCancel(taskId, id -> {
-                log.info("下载任务取消-所有线程已结束: taskId={}", id);
-            });
-
-            // 回调已被替换为 no-op，现在安全地设置最终取消状态
-            uploadTaskService.updateTaskStatus(taskId, 4, "用户取消"); // 已取消
-            webSocketService.pushTaskStatus(taskId, 4, "下载已取消");
-
-            log.info("取消下载任务: taskId={}", taskId);
-            return true;
-        }
-        // 任务不在运行中，直接更新数据库状态
-        return uploadTaskService.cancelTask(taskId);
-    }
-
     /**
      * 下载完成后更新FileInfo的实际文件路径和相对路径（使用默认下载目录作为基准）
      */
@@ -1985,40 +1653,9 @@ public class EmbyServiceImpl implements IEmbyService {
     @Value("${app.emby.upload-dir:/data/upload}")
     private String defaultUploadDir;
 
-    /**
-     * 获取上传目录（优先从数据库读取，否则使用默认值）
-     */
-    private String getUploadDir() {
-        try {
-            Map<String, Object> config = smartSearchConfigService.getFullConfig("default");
-            String uploadDir = (String) config.get("uploadDir");
-            if (uploadDir != null && !uploadDir.trim().isEmpty()) {
-                return uploadDir;
-            }
-        } catch (Exception e) {
-            log.warn("读取上传目录配置失败，使用默认值: {}", e.getMessage());
-        }
-        return defaultUploadDir;
-    }
-
-    /**
-     * 获取GD目标路径（优先从数据库读取，否则使用默认值）
-     */
-    private String getGdTargetPath() {
-        try {
-            Map<String, Object> config = smartSearchConfigService.getFullConfig("default");
-            String gdTargetPath = (String) config.get("gdTargetPath");
-            if (gdTargetPath != null && !gdTargetPath.trim().isEmpty()) {
-                return gdTargetPath;
-            }
-        } catch (Exception e) {
-            log.warn("读取GD目标路径配置失败，使用默认值: {}", e.getMessage());
-        }
-        return "/"; // 默认上传到根目录
-    }
 
     @Override
-    public Long batchDownloadAndUploadAsync(List<String> itemIds) {
+    public Long batchDownloadAndUploadAsync(List<String> itemIds, String uploadDir, String gdTargetPath) {
         // 1. 收集媒体项名称，用于自动生成任务名
         List<String> itemNames = new ArrayList<>();
         for (String itemId : itemIds) {
@@ -2047,12 +1684,11 @@ public class EmbyServiceImpl implements IEmbyService {
         }
 
         // 2. 创建 UploadTask（taskType=5 表示下载上传任务）
-        String gdTargetPath = getGdTargetPath();
-        Long taskId = uploadTaskService.createDownloadUploadTask(taskName, getUploadDir(), gdTargetPath, itemIds.size());
+        Long taskId = uploadTaskService.createDownloadUploadTask(taskName, uploadDir, gdTargetPath, itemIds.size());
         if (taskId == null) {
             throw new BusinessException("创建下载上传任务失败");
         }
-        log.info("创建下载上传任务: taskId={}, 上传目录={}, GD目标路径={}", taskId, getUploadDir(), gdTargetPath);
+        log.info("创建下载上传任务: taskId={}, 上传目录={}, GD目标路径={}", taskId, uploadDir, gdTargetPath);
 
         // 3. 为每个 itemId 创建 FileInfo 行
         List<FileInfo> fileInfoList = new ArrayList<>();
@@ -2075,6 +1711,8 @@ public class EmbyServiceImpl implements IEmbyService {
 
         // 5. 启动并发下载上传线程
         final Long finalTaskId = taskId;
+        final String finalUploadDir = uploadDir;
+        final String finalGdTargetPath = gdTargetPath;
 
         // ── 注册到 TaskPauseManager ──
         TaskPauseManager.register(finalTaskId, itemIds.size());
@@ -2093,15 +1731,15 @@ public class EmbyServiceImpl implements IEmbyService {
             log.info("========================================");
             log.info("批量下载上传任务开始: taskId={}, 共 {} 个媒体项, 并发数: {}",
                 finalTaskId, itemIds.size(), concurrentDownloads);
-            log.info("下载目录: {}", getUploadDir());
+            log.info("下载目录: {}", finalUploadDir);
             log.info("========================================");
 
             // ═══ 预创建目标目录，避免并发上传时GD创建重复目录 ═══
             try {
                 GdAccount account = gdAccountService.getNextAvailableAccountInRotation(finalTaskId, 0L);
                 if (account != null) {
-                    rcloneUtil.makeDirectory(account.getRcloneConfigName(), gdTargetPath);
-                    log.info("目标目录预创建完成: {}", gdTargetPath);
+                    rcloneUtil.makeDirectory(account.getRcloneConfigName(), finalGdTargetPath);
+                    log.info("目标目录预创建完成: {}", finalGdTargetPath);
                 }
             } catch (Exception e) {
                 log.warn("预创建目录失败（不影响上传）: {}", e.getMessage());
@@ -2137,7 +1775,6 @@ public class EmbyServiceImpl implements IEmbyService {
                                     throw new BusinessException("媒体项不存在: " + itemId);
                                 }
 
-                                String uploadDir = getUploadDir();
                                 boolean isSeries = "Series".equals(item.getType());
 
                                 if (isSeries) {
@@ -2159,7 +1796,7 @@ public class EmbyServiceImpl implements IEmbyService {
                                     }
                                     log.info("[{}/{}] 共 {} 集，开始交错下载上传", index + 1, itemIds.size(), episodes.size());
 
-                                    String base = gdTargetPath.endsWith("/") ? gdTargetPath : gdTargetPath + "/";
+                                    String base = finalGdTargetPath.endsWith("/") ? finalGdTargetPath : finalGdTargetPath + "/";
                                     int epSuccess = 0;
 
                                     for (int ei = 0; ei < episodes.size(); ei++) {
@@ -2196,9 +1833,34 @@ public class EmbyServiceImpl implements IEmbyService {
                                                     .replaceAll("[\\\\/:*?\"<>|]", "_") + ext;
                                         }
 
+                                        // 检查是否需要添加剧名前缀（如果文件名以S\d+E\d+开头，说明缺少剧名）
+                                        if (flatFilename.matches("^S\\d+E\\d+.*")) {
+                                            String seriesId = episode.getSeriesId();
+                                            if (seriesId != null && !seriesId.isEmpty()) {
+                                                try {
+                                                    EmbyItem series = getItemDetail(seriesId);
+                                                    if (series != null) {
+                                                        String seriesPrefix = series.getName() != null ? series.getName() : "";
+                                                        if (series.getProductionYear() != null) {
+                                                            seriesPrefix += " (" + series.getProductionYear() + ")";
+                                                        }
+                                                        String tmdbId = extractTmdbId(series);
+                                                        if (tmdbId != null) {
+                                                            seriesPrefix += " [tmdbid=" + tmdbId + "]";
+                                                        }
+                                                        seriesPrefix = seriesPrefix.replaceAll("[\\\\/:*?\"<>|]", "_");
+                                                        flatFilename = seriesPrefix + " " + flatFilename;
+                                                        log.info("[{}/{}] [{}/{}集] 添加剧名前缀: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), flatFilename);
+                                                    }
+                                                } catch (Exception e) {
+                                                    log.warn("[{}/{}] [{}/{}集] 获取系列信息失败: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), e.getMessage());
+                                                }
+                                            }
+                                        }
+
                                         // 下载单集后立即上传
                                         try {
-                                            Map<String, Object> epResult = downloadSingleItem(episode, uploadDir, flatFilename);
+                                            Map<String, Object> epResult = downloadSingleItem(episode, finalUploadDir, flatFilename);
                                             if (epResult == null || !Boolean.TRUE.equals(epResult.get("success"))) {
                                                 log.warn("[{}/{}] [{}/{}集] 下载失败: {}", index + 1, itemIds.size(), ei + 1, episodes.size(), flatFilename);
                                                 continue;
@@ -2234,7 +1896,7 @@ public class EmbyServiceImpl implements IEmbyService {
                                     log.info("[{}/{}] 电视剧交错下载上传完成: 成功 {}/{} 集", index + 1, itemIds.size(), epSuccess, episodes.size());
 
                                     // 更新 FileInfo 路径（series 用 gdTargetPath 标记）
-                                    currentFile.setFilePath(gdTargetPath);
+                                    currentFile.setFilePath(finalGdTargetPath);
                                     fileInfoService.updateById(currentFile);
 
                                 } else {
@@ -2250,16 +1912,36 @@ public class EmbyServiceImpl implements IEmbyService {
                                         filenameOverride = extractEpisodeFilenameFromPath(item, ext);
                                         if (filenameOverride != null) {
                                             log.info("[{}/{}] 使用原始文件名: {}", index + 1, itemIds.size(), filenameOverride);
+
+                                            // 检查电影文件名是否缺少标题信息
+                                            int lastDotIndex = filenameOverride.lastIndexOf('.');
+                                            if (lastDotIndex > 0) {
+                                                String nameWithoutExt = filenameOverride.substring(0, lastDotIndex);
+                                                // 如果文件名不包含年份括号或tmdbid，则添加前缀
+                                                if (!nameWithoutExt.contains("(") && !nameWithoutExt.contains("[tmdbid=")) {
+                                                    String moviePrefix = item.getName() != null ? item.getName() : "";
+                                                    if (item.getProductionYear() != null) {
+                                                        moviePrefix += " (" + item.getProductionYear() + ")";
+                                                    }
+                                                    String tmdbId = extractTmdbId(item);
+                                                    if (tmdbId != null) {
+                                                        moviePrefix += " [tmdbid=" + tmdbId + "]";
+                                                    }
+                                                    moviePrefix = moviePrefix.replaceAll("[\\\\/:*?\"<>|]", "_");
+                                                    filenameOverride = moviePrefix + " " + filenameOverride;
+                                                    log.info("[{}/{}] 添加电影名前缀: {}", index + 1, itemIds.size(), filenameOverride);
+                                                }
+                                            }
                                         }
                                     }
 
-                                    Map<String, Object> downloadResult = downloadSingleItem(item, uploadDir, filenameOverride);
+                                    Map<String, Object> downloadResult = downloadSingleItem(item, finalUploadDir, filenameOverride);
                                     if (downloadResult == null || !Boolean.TRUE.equals(downloadResult.get("success"))) {
                                         throw new BusinessException("下载失败");
                                     }
                                     log.info("[{}/{}] 下载成功", index + 1, itemIds.size());
 
-                                    updateFileInfoAfterDownload(currentFile, downloadResult, uploadDir);
+                                    updateFileInfoAfterDownload(currentFile, downloadResult, finalUploadDir);
                                     log.info("[{}/{}] FileInfo更新完成: filePath={}, relativePath={}",
                                         index + 1, itemIds.size(), currentFile.getFilePath(), currentFile.getRelativePath());
 
@@ -2272,7 +1954,36 @@ public class EmbyServiceImpl implements IEmbyService {
                                         throw new BusinessException("没有可用的账号");
                                     }
                                     log.info("[{}/{}] 使用账号: {}", index + 1, itemIds.size(), account.getAccountName());
-                                    uploadService.uploadFileInternal(finalTaskId, currentFile.getId(), account.getId());
+
+                                    // 直接上传，不经过格式化流程
+                                    String localFilePath = currentFile.getFilePath();
+                                    String targetPath = finalGdTargetPath.endsWith("/") ? finalGdTargetPath : finalGdTargetPath + "/";
+                                    String fileName = new java.io.File(localFilePath).getName();
+                                    String remoteFilePath = targetPath + fileName;
+
+                                    RcloneResult uploadResult = rcloneUtil.uploadSingleFileTo(
+                                        localFilePath, account.getRcloneConfigName(), remoteFilePath,
+                                        line -> log.debug("rclone: {}", line));
+
+                                    if (!uploadResult.isSuccess()) {
+                                        throw new BusinessException("上传失败: " + uploadResult.getErrorMessage());
+                                    }
+
+                                    // 标记文件为已上传
+                                    fileInfoService.markFileAsUploaded(currentFile.getId(), account.getId());
+
+                                    // 插入上传记录
+                                    UploadRecord uploadRecord = new UploadRecord();
+                                    uploadRecord.setTaskId(finalTaskId);
+                                    uploadRecord.setAccountId(account.getId());
+                                    uploadRecord.setFileId(currentFile.getId());
+                                    uploadRecord.setUploadSize(currentFile.getFileSize());
+                                    uploadRecord.setUploadTime(DateTimeUtil.now());
+                                    uploadRecord.setStatus(1);
+                                    uploadRecordMapper.insert(uploadRecord);
+
+                                    // 更新账号配额
+                                    gdAccountService.updateAccountQuota(account.getId(), currentFile.getFileSize());
                                 }
 
                                 log.info("[{}/{}] 上传成功!", index + 1, itemIds.size());
@@ -2386,5 +2097,35 @@ public class EmbyServiceImpl implements IEmbyService {
 
         log.info("批量下载上传任务已启动: taskId={}, 共 {} 个媒体项", taskId, itemIds.size());
         return taskId;
+    }
+
+    @Override
+    public boolean pauseDownloadTask(Long taskId) {
+        AtomicBoolean stopFlag = downloadStopFlags.get(taskId);
+        if (stopFlag != null) {
+            stopFlag.set(true);
+            uploadTaskService.updateTaskStatus(taskId, 6, "暂停中");
+            TaskPauseManager.requestPause(taskId, tid -> {
+                uploadTaskService.updateTaskStatus(tid, 4, "已暂停");
+                webSocketService.pushTaskStatus(tid, 4, "已暂停");
+            });
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public boolean cancelDownloadTask(Long taskId) {
+        AtomicBoolean stopFlag = downloadStopFlags.get(taskId);
+        if (stopFlag != null) {
+            stopFlag.set(true);
+            uploadTaskService.updateTaskStatus(taskId, 6, "取消中");
+            TaskPauseManager.requestCancel(taskId, tid -> {
+                uploadTaskService.updateTaskStatus(tid, 5, "已取消");
+                webSocketService.pushTaskStatus(tid, 5, "已取消");
+            });
+            return true;
+        }
+        return false;
     }
 }

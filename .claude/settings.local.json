@@ -30,7 +30,8 @@
       "Bash(where mvn:*)",
       "Bash(npx vue-tsc:*)",
       "Bash(cmd:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(cd \"D:/mbfczzzz/claude/gdUpload/backend/src/main/java/com/gdupload/service/impl\" && sed -i '1592,1899d' EmbyServiceImpl.java && echo \"删除完成\")"
     ]
   }
 }

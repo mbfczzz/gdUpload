@@ -296,15 +296,6 @@ app:
               批量搜索下载
             </el-button>
             <el-button
-              type="warning"
-              @click="handleBatchDirectDownload"
-              :loading="batchDirectDownloading"
-              :disabled="libraryItems.length === 0"
-            >
-              <el-icon><Download /></el-icon>
-              批量直接下载
-            </el-button>
-            <el-button
               type="success"
               @click="handleBatchDownloadAndUpload"
               :loading="batchDownloadUploadLoading"
@@ -996,7 +987,6 @@ import {
   getCacheStatus,
   getDownloadUrls,
   downloadToServer,
-  batchDownloadToServer,
   batchDownloadAndUpload
 } from '@/api/emby'
 import { searchSubscribe, searchByKeyword, transferToAlipan, batchValidateLinks, aiSelectBestResource } from '@/api/subscribe'
@@ -1016,7 +1006,6 @@ const loadingGenres = ref(false)
 const loadingTags = ref(false)
 const loadingStudios = ref(false)
 const batchDownloading = ref(false) // 批量下载状态
-const batchDirectDownloading = ref(false) // 批量直接下载状态
 const batchDownloadUploadLoading = ref(false) // 批量下载并上传状态
 
 // 数据
@@ -3332,7 +3321,7 @@ const handleBatchDownload = async () => {
                 transferSuccess = true
 
                 // 标记为已转存
-                transferStatusMap.value[item.id] = true
+                transferStatusMap.value[item.id] = 'success'
 
                 // 保存转存历史
                 try {
@@ -3457,71 +3446,6 @@ const handleBatchDownload = async () => {
   )
 }
 
-// 批量直接下载当前页
-const handleBatchDirectDownload = async () => {
-  // 过滤出电影和剧集
-  const downloadableItems = libraryItems.value.filter(
-    item => item.type === 'Movie' || item.type === 'Series'
-  )
-
-  if (downloadableItems.length === 0) {
-    ElMessage.warning('当前页没有可下载的媒体项（仅支持电影和剧集）')
-    return
-  }
-
-  // 过滤掉已下载的
-  const needDownloadItems = downloadableItems.filter(
-    item => downloadStatusMap.value[item.id] !== 'success'
-  )
-
-  if (needDownloadItems.length === 0) {
-    ElMessage.info('当前页所有媒体项都已下载')
-    return
-  }
-
-  // 确认操作
-  try {
-    await ElMessageBox.confirm(
-      `确定要批量直接下载 ${needDownloadItems.length} 个媒体项吗？\n\n` +
-      `（已跳过 ${downloadableItems.length - needDownloadItems.length} 个已下载项）\n\n` +
-      `下载任务将在后端执行，可在"任务管理"页面查看进度。`,
-      '批量直接下载确认',
-      {
-        confirmButtonText: '开始下载',
-        cancelButtonText: '取消',
-        type: 'warning'
-      }
-    )
-  } catch {
-    return // 用户取消
-  }
-
-  batchDirectDownloading.value = true
-
-  try {
-    const itemIds = needDownloadItems.map(item => item.id)
-    const res = await batchDownloadToServer(itemIds)
-
-    if (res.data && res.data.status === 'started') {
-      const taskId = res.data.taskId
-      ElMessageBox.alert(
-        `批量下载任务已创建（任务ID: ${taskId}），共 ${itemIds.length} 个媒体项。\n\n请前往"任务管理"页面查看实时下载进度。`,
-        '下载任务已启动',
-        {
-          confirmButtonText: '知道了',
-          type: 'success'
-        }
-      )
-    } else {
-      ElMessage.error('启动批量下载失败')
-    }
-  } catch (error) {
-    console.error('批量下载失败:', error)
-    ElMessage.error('批量下载失败: ' + (error.message || '未知错误'))
-  } finally {
-    batchDirectDownloading.value = false
-  }
-}
 
 // 批量下载并上传当前页
 const handleBatchDownloadAndUpload = async () => {
@@ -3543,7 +3467,7 @@ const handleBatchDownloadAndUpload = async () => {
       `任务将在后端执行，可在"任务管理"页面查看进度。`,
       '批量下载并上传确认',
       {
-        confirmButtonText: '开始处理',
+        confirmButtonText: '下一步',
         cancelButtonText: '取消',
         type: 'warning'
       }
@@ -3552,11 +3476,36 @@ const handleBatchDownloadAndUpload = async () => {
     return // 用户取消
   }
 
+  // 输入路径
+  let uploadDir, gdTargetPath
+  try {
+    const { value: paths } = await ElMessageBox.prompt(
+      '请输入路径（用换行分隔）：\n第1行：本地下载目录\n第2行：GD目标路径',
+      '配置路径',
+      {
+        confirmButtonText: '开始处理',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '例如：\n/data/emby\n/video2'
+      }
+    )
+    const lines = paths.trim().split('\n')
+    uploadDir = lines[0]?.trim()
+    gdTargetPath = lines[1]?.trim()
+
+    if (!uploadDir || !gdTargetPath) {
+      ElMessage.error('请输入完整的路径信息')
+      return
+    }
+  } catch {
+    return // 用户取消
+  }
+
   batchDownloadUploadLoading.value = true
 
   try {
     const itemIds = downloadableItems.map(item => item.id)
-    const res = await batchDownloadAndUpload(itemIds)
+    const res = await batchDownloadAndUpload({ itemIds, uploadDir, gdTargetPath })
 
     if (res.data && res.data.status === 'started') {
       const taskId = res.data.taskId

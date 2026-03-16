@@ -159,30 +159,15 @@ public interface IEmbyService {
     void downloadToServerAsync(String itemId);
 
     /**
-     * 批量异步下载媒体项到服务器本地
-     * 后端依次下载，不依赖前端保持连接
+     * 批量下载并上传媒体项（异步，顺序执行）
+     * 下载一个剧集后立即上传，然后处理下一个
      *
      * @param itemIds 媒体项ID列表
-     * @return 任务ID（用于在任务管理页面查看进度）
+     * @param uploadDir 本地下载目录
+     * @param gdTargetPath GD目标路径
+     * @return 任务ID
      */
-    Long batchDownloadToServerAsync(List<String> itemIds);
-
-    /**
-     * 批量异步下载媒体项到服务器本地（支持断点续传）
-     * 后端依次下载，不依赖前端保持连接
-     *
-     * @param itemIds 媒体项ID列表
-     * @param existingTaskId 已存在的任务ID（用于恢复任务），如果为null则创建新任务
-     * @return 任务ID（用于在任务管理页面查看进度）
-     */
-    Long batchDownloadToServerAsync(List<String> itemIds, Long existingTaskId);
-
-    /**
-     * 获取批量下载进度
-     *
-     * @return 进度信息
-     */
-    Map<String, Object> getBatchDownloadProgress();
+    Long batchDownloadAndUploadAsync(List<String> itemIds, String uploadDir, String gdTargetPath);
 
     /**
      * 暂停下载任务
@@ -199,13 +184,4 @@ public interface IEmbyService {
      * @return 是否成功
      */
     boolean cancelDownloadTask(Long taskId);
-
-    /**
-     * 批量下载并上传媒体项（异步，顺序执行）
-     * 下载一个剧集后立即上传，然后处理下一个
-     *
-     * @param itemIds 媒体项ID列表
-     * @return 任务ID
-     */
-    Long batchDownloadAndUploadAsync(List<String> itemIds);
 }
